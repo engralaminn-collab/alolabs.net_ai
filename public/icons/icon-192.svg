@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
+  <rect width="192" height="192" rx="40" fill="#003ABC"/>
+  <polygon points="96,24 164,63 164,141 96,180 28,141 28,63" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="3"/>
+  <polygon points="96,38 150,70 150,134 96,166 42,134 42,70" fill="rgba(255,255,255,0.08)"/>
+  <text x="96" y="118" text-anchor="middle" font-family="Inter,system-ui,-apple-system,sans-serif" font-weight="700" font-size="80" fill="#FFFFFF" letter-spacing="-2">A</text>
+  <rect x="56" y="138" width="80" height="5" rx="2.5" fill="#FF6A00"/>
+</svg>
