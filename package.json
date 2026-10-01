@@ -1,11 +1,17 @@
 {
-  "name": "nextjs_tailwind_shadcn_ts",
-  "version": "0.2.0",
+  "name": "alolabs-agentos",
+  "version": "1.0.0",
+  "description": "ALO Labs AgentOS / AI-EOS — Enterprise Artificial Intelligence Operating System",
   "private": true,
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
   "scripts": {
-    "dev": "next dev -p 3000 2>&1 | tee dev.log",
+    "dev": "next dev -p 3011 2>&1 | tee dev.log",
     "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
-    "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
+    "start": "PORT=3011 NODE_ENV=production node .next/standalone/server.js 2>&1 | tee server.log",
+    "start:bun": "PORT=3011 NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -19,7 +25,10 @@
     "db:migrate:mysql": "npx tsx scripts/migrate-sqlite-to-mysql.ts",
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset",
-    "seed:enterprise": "npx tsx scripts/seed-enterprise-v3.ts"
+    "verify:workforce": "npx tsx scripts/verify-2000-workforce.ts",
+    "verify:mysql": "npx tsx scripts/verify-mysql-compatibility.ts",
+    "seed:enterprise": "npx tsx scripts/seed-enterprise-v3.ts",
+    "seed:departments": "npx tsx scripts/seed-100-departments.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.11.1",

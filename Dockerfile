@@ -49,7 +49,7 @@ WORKDIR /app
 # Set production environment
 ENV NODE_ENV=production
 ENV HOSTNAME=0.0.0.0
-ENV PORT=3000
+ENV PORT=3011
 ENV NEXT_TELEMETRY_DISABLED=1
 
 # Copy standalone build output
@@ -71,11 +71,11 @@ RUN mkdir -p /app/data /app/logs /app/backups /app/db /app/storage && \
 USER appuser
 
 # Expose port
-EXPOSE 3000
+EXPOSE 3011
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3011/api/health || exit 1
 
 # Start the application (standalone mode uses server.js)
 CMD ["node", "server.js"]

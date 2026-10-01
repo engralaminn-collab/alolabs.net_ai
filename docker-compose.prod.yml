@@ -13,10 +13,10 @@ services:
     container_name: alolabs-app
     restart: always
     ports:
-      - "${APP_PORT:-3000}:3000"
+      - "${APP_PORT:-3011}:3011"
     environment:
       NODE_ENV: production
-      PORT: "3000"
+      PORT: "3011"
       HOSTNAME: 0.0.0.0
       NEXT_TELEMETRY_DISABLED: "1"
       DATABASE_URL: "file:/app/data/agenthub.db"
@@ -61,7 +61,7 @@ services:
       minio:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3011/api/health"]
       interval: 30s
       timeout: 10s
       start_period: 60s
