@@ -72,6 +72,24 @@ export async function migrateSQLiteToMySQL(options: MigrateOptions) {
     await mysqlConn.execute("SET sql_mode = ''");
     await mysqlConn.execute('SET NAMES utf8mb4');
 
+    // Ensure Settings key has utf8mb4_bin collation for case-sensitive keys
+    try {
+      await mysqlConn.execute(
+        'ALTER TABLE `Settings` MODIFY COLUMN `key` VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL'
+      );
+    } catch {
+      // Table may be created during migration or push
+    }
+
+    // Fetch all existing tables in MySQL schema (case-insensitive mapping)
+    const [existingTables] = await mysqlConn.execute(
+      'SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE()'
+    );
+    const mysqlTableMap = new Map<string, string>();
+    for (const row of existingTables as any[]) {
+      mysqlTableMap.set(row.TABLE_NAME.toLowerCase(), row.TABLE_NAME);
+    }
+
     const results: { table: string; sqliteRows: number; mysqlRows: number; status: string }[] = [];
 
     for (const table of tables) {
@@ -83,12 +101,19 @@ export async function migrateSQLiteToMySQL(options: MigrateOptions) {
         continue;
       }
 
+      // Check target MySQL table name
+      const actualMysqlTable = mysqlTableMap.get(table.toLowerCase()) || table;
+
       // Check target MySQL table columns
       const [colRows] = await mysqlConn.execute(
         'SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
-        [table]
+        [actualMysqlTable]
       );
-      const mysqlCols = new Set((colRows as any[]).map((c) => c.COLUMN_NAME));
+      const mysqlCols = new Set((colRows as any[]).map((c) => c.COLUMN_NAME.toLowerCase()));
+      const mysqlColMap = new Map<string, string>();
+      for (const c of colRows as any[]) {
+        mysqlColMap.set(c.COLUMN_NAME.toLowerCase(), c.COLUMN_NAME);
+      }
 
       if (mysqlCols.size === 0) {
         console.warn(`[WARN]  ${table} does not exist in MySQL schema. Skipping.`);
@@ -98,29 +123,30 @@ export async function migrateSQLiteToMySQL(options: MigrateOptions) {
 
       // Read columns from SQLite
       const sqliteCols = sqliteDb.prepare(`PRAGMA table_info("${table}")`).all() as { name: string; type: string }[];
-      const commonCols = sqliteCols.map((c) => c.name).filter((c) => mysqlCols.has(c));
+      const commonSqliteCols = sqliteCols.filter((c) => mysqlCols.has(c.name.toLowerCase()));
+      const commonMysqlCols = commonSqliteCols.map((c) => mysqlColMap.get(c.name.toLowerCase()) || c.name);
 
-      if (commonCols.length === 0) {
+      if (commonSqliteCols.length === 0) {
         console.warn(`[WARN]  No common columns for ${table}. Skipping.`);
         results.push({ table, sqliteRows: sqliteCount, mysqlRows: 0, status: 'NO_COMMON_COLUMNS' });
         continue;
       }
 
-      console.log(`[START] Migrating ${table} (${sqliteCount} rows)...`);
+      console.log(`[START] Migrating ${table} -> \`${actualMysqlTable}\` (${sqliteCount} rows)...`);
 
       // Read rows in pages from SQLite
       let offset = 0;
       let inserted = 0;
 
-      // Truncate or clean target table first
-      await mysqlConn.execute(`DELETE FROM \`${table}\``);
+      // Clean target table first
+      await mysqlConn.execute(`DELETE FROM \`${actualMysqlTable}\``);
 
-      const colList = commonCols.map((c) => `\`${c}\``).join(', ');
-      const placeholders = `(${commonCols.map(() => '?').join(', ')})`;
+      const colList = commonMysqlCols.map((c) => `\`${c}\``).join(', ');
+      const placeholders = `(${commonMysqlCols.map(() => '?').join(', ')})`;
 
       while (offset < sqliteCount) {
         const rows = sqliteDb
-          .prepare(`SELECT ${commonCols.map((c) => `"${c}"`).join(', ')} FROM "${table}" LIMIT ? OFFSET ?`)
+          .prepare(`SELECT ${commonSqliteCols.map((c) => `"${c.name}"`).join(', ')} FROM "${table}" LIMIT ? OFFSET ?`)
           .all(batchSize, offset) as Record<string, unknown>[];
 
         if (rows.length === 0) break;
@@ -131,8 +157,8 @@ export async function migrateSQLiteToMySQL(options: MigrateOptions) {
 
         for (const row of rows) {
           valuePlaceholders.push(placeholders);
-          for (const col of commonCols) {
-            let val = row[col];
+          for (const col of commonSqliteCols) {
+            let val = row[col.name];
             // Format dates / booleans / objects if needed
             if (val instanceof Date) {
               val = val.toISOString().slice(0, 19).replace('T', ' ');
@@ -141,7 +167,7 @@ export async function migrateSQLiteToMySQL(options: MigrateOptions) {
           }
         }
 
-        const insertQuery = `INSERT INTO \`${table}\` (${colList}) VALUES ${valuePlaceholders.join(', ')}`;
+        const insertQuery = `INSERT INTO \`${actualMysqlTable}\` (${colList}) VALUES ${valuePlaceholders.join(', ')}`;
         await mysqlConn.execute(insertQuery, bulkValues);
 
         inserted += rows.length;
@@ -149,15 +175,15 @@ export async function migrateSQLiteToMySQL(options: MigrateOptions) {
       }
 
       // Verify row count
-      const [countResult] = await mysqlConn.execute(`SELECT COUNT(*) as count FROM \`${table}\``);
+      const [countResult] = await mysqlConn.execute(`SELECT COUNT(*) as count FROM \`${actualMysqlTable}\``);
       const mysqlCount = (countResult as any[])[0]?.count ?? 0;
 
       if (mysqlCount === sqliteCount) {
-        console.log(`[OK]    ${table}: ${mysqlCount}/${sqliteCount} rows migrated.`);
-        results.push({ table, sqliteRows: sqliteCount, mysqlRows: mysqlCount, status: 'SUCCESS' });
+        console.log(`[OK]    ${actualMysqlTable}: ${mysqlCount}/${sqliteCount} rows migrated.`);
+        results.push({ table: actualMysqlTable, sqliteRows: sqliteCount, mysqlRows: mysqlCount, status: 'SUCCESS' });
       } else {
-        console.warn(`[WARN]  ${table}: Count mismatch (SQLite: ${sqliteCount}, MySQL: ${mysqlCount})`);
-        results.push({ table, sqliteRows: sqliteCount, mysqlRows: mysqlCount, status: 'MISMATCH' });
+        console.warn(`[WARN]  ${actualMysqlTable}: Count mismatch (SQLite: ${sqliteCount}, MySQL: ${mysqlCount})`);
+        results.push({ table: actualMysqlTable, sqliteRows: sqliteCount, mysqlRows: mysqlCount, status: 'MISMATCH' });
       }
     }
 
@@ -186,8 +212,18 @@ export async function migrateSQLiteToMySQL(options: MigrateOptions) {
 
 // CLI entry point
 if (require.main === module) {
-  const sqlitePath = process.argv[2] || process.env.SQLITE_PATH || path.join(process.cwd(), 'db', 'dev.db');
-  const mysqlUrl = process.argv[3] || process.env.DATABASE_URL || 'mysql://alohub_user:password@127.0.0.1:3306/alohub_production';
+  const candidatePaths = [
+    process.argv[2],
+    process.env.SQLITE_PATH,
+    '/opt/workspace/db/custom.db',
+    path.join(process.cwd(), 'db', 'custom.db'),
+    path.join(process.cwd(), 'prisma', 'custom.db'),
+    path.join(process.cwd(), 'db', 'dev.db'),
+    path.join(process.cwd(), 'prisma', 'dev.db'),
+  ].filter(Boolean) as string[];
+
+  const sqlitePath = candidatePaths.find((p) => fs.existsSync(p)) || candidatePaths[0];
+  const mysqlUrl = process.argv[3] || process.env.DATABASE_URL || 'mysql://alohub_user:password@127.0.0.1:3306/db_hosting';
   const dryRun = process.argv.includes('--dry-run');
 
   migrateSQLiteToMySQL({ sqlitePath, mysqlUrl, dryRun })

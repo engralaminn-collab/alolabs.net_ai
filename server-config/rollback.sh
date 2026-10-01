@@ -51,7 +51,7 @@ sleep 5
 
 # ─── Health Check ───────────────────────────────────────────
 if systemctl is-active --quiet "$SERVICE_NAME"; then
-  HEALTH=$(curl -sf --max-time 10 "http://localhost:3000/api/health" 2>/dev/null || echo "")
+  HEALTH=$(curl -sf --max-time 10 "http://localhost:3011/api/health" 2>/dev/null || echo "")
   if echo "$HEALTH" | grep -q '"status"'; then
     log_ok "Rollback successful — service is healthy"
     echo "{"

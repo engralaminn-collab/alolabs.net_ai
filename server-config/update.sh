@@ -141,7 +141,7 @@ sleep 5
 
 # ─── Health Check ───────────────────────────────────────────
 log_info "Running health check..."
-HEALTH=$(curl -sf --max-time 15 "http://localhost:3000/api/health" 2>/dev/null || echo "")
+HEALTH=$(curl -sf --max-time 15 "http://localhost:3011/api/health" 2>/dev/null || echo "")
 if echo "$HEALTH" | grep -q '"status"'; then
   log_ok "Health check passed"
 else

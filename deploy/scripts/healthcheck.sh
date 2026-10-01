@@ -9,7 +9,7 @@
 set -euo pipefail
 
 # ── Configuration ────────────────────────────────────────────
-APP_URL="${HEALTHCHECK_APP_URL:-http://127.0.0.1:3000}"
+APP_URL="${HEALTHCHECK_APP_URL:-http://127.0.0.1:3011}"
 HEALTH_ENDPOINT="${HEALTHCHECK_ENDPOINT:-/api/health}"
 DB_HOST="${HEALTHCHECK_DB_HOST:-127.0.0.1}"
 DB_PORT="${HEALTHCHECK_DB_PORT:-3306}"
@@ -42,7 +42,7 @@ for arg in "$@"; do
             echo "  --quiet  Only output failures"
             echo ""
             echo "Environment variables:"
-            echo "  HEALTHCHECK_APP_URL    App base URL (default: http://127.0.0.1:3000)"
+            echo "  HEALTHCHECK_APP_URL    App base URL (default: http://127.0.0.1:3011)"
             echo "  HEALTHCHECK_DB_HOST    Database host (default: 127.0.0.1)"
             echo "  HEALTHCHECK_REDIS_HOST Redis host (default: 127.0.0.1)"
             echo "  HEALTHCHECK_QDRANT_URL Qdrant URL (default: http://127.0.0.1:6333)"

@@ -15,6 +15,7 @@ export interface EvolutionProposal {
   reason: string
   capabilityGap: string
   generation: number
+  isLoopAgent?: boolean
 }
 
 export interface EvolutionConfig {
@@ -22,7 +23,10 @@ export interface EvolutionConfig {
   maxGeneration: number
   maxProposalsPerAgent: number
   maxConcurrencyPerDept: number
-  phase: 'phase1' | 'phase2' | 'locked'
+  phase: 'phase1_descendants' | 'phase2_loop_agents' | 'phase3_department_models' | 'locked'
+  phase1MaxDescendants: number
+  phase2MaxLoopAgents: number
+  requireHumanApproval: boolean
 }
 
 const DEFAULT_CONFIG: EvolutionConfig = {
@@ -30,10 +34,14 @@ const DEFAULT_CONFIG: EvolutionConfig = {
   maxGeneration: 3,
   maxProposalsPerAgent: 5,
   maxConcurrencyPerDept: 50,
-  phase: 'phase1',
+  phase: 'phase1_descendants',
+  phase1MaxDescendants: 5,
+  phase2MaxLoopAgents: 1,
+  requireHumanApproval: false,
 }
 
-function safeParseJSON<T = unknown>(jsonStr: string, fallback: T): T {
+function safeParseJSON<T = unknown>(jsonStr: string | null | undefined, fallback: T): T {
+  if (!jsonStr) return fallback
   try {
     return JSON.parse(jsonStr) as T
   } catch {
@@ -56,15 +64,7 @@ function slugify(text: string): string {
 // ── getEvolutionConfig ────────────────────────────────────────────────────
 
 export function getEvolutionConfig(): EvolutionConfig {
-  try {
-    // We access the DB synchronously isn't possible, so we use a cached/read approach.
-    // Since this is called in async contexts, the config is read from DB there.
-    // This function returns defaults; callers that need DB-backed config should
-    // call getEvolutionConfigFromDB().
-    return { ...DEFAULT_CONFIG }
-  } catch {
-    return { ...DEFAULT_CONFIG }
-  }
+  return { ...DEFAULT_CONFIG }
 }
 
 export async function getEvolutionConfigFromDB(): Promise<EvolutionConfig> {
@@ -89,6 +89,10 @@ export async function submitProposal(proposal: EvolutionProposal): Promise<{
   try {
     const config = await getEvolutionConfigFromDB()
 
+    if (config.phase === 'locked') {
+      return { approved: false, reason: 'Workforce evolution is currently locked by system policy' }
+    }
+
     // 1. Check parent agent exists and is active
     const parentAgent = await db.agent.findUnique({
       where: { agentId: proposal.parentAgentId },
@@ -100,6 +104,12 @@ export async function submitProposal(proposal: EvolutionProposal): Promise<{
       return { approved: false, reason: 'Parent agent is not active' }
     }
 
+    // Parse parent agent metadata for genealogy
+    const parentSelfImp = safeParseJSON<Record<string, unknown>>(parentAgent.selfImprovement, {})
+    const parentGeneration = Number(parentSelfImp.generation ?? 0)
+    const currentGeneration = parentGeneration + 1
+    const proposedDescendantsCount = Number(parentSelfImp.descendantCount ?? 0)
+
     // 2. Check total agent count < maxPopulation
     const totalAgents = await db.agent.count()
     if (totalAgents >= config.maxPopulation) {
@@ -110,15 +120,40 @@ export async function submitProposal(proposal: EvolutionProposal): Promise<{
     }
 
     // 3. Check generation < maxGeneration
-    if (proposal.generation >= config.maxGeneration) {
+    if (currentGeneration > config.maxGeneration) {
       return {
         approved: false,
         reason: `Maximum generation depth reached (${config.maxGeneration})`,
       }
     }
 
-    // 4. Check parent's proposal count (skip if no parentId field on Agent model)
-    // The Agent model does not have a parentId field, so we skip this check.
+    // 4. Phase-specific evolution rules (Section 7)
+    // Phase 1 (First 3 months): up to 5 descendant agents per qualified parent
+    if (config.phase === 'phase1_descendants') {
+      if (proposal.isLoopAgent) {
+        return {
+          approved: false,
+          reason: 'Loop agents are only permitted in Phase 2 (Months 4-6)',
+        }
+      }
+      if (proposedDescendantsCount >= config.phase1MaxDescendants) {
+        return {
+          approved: false,
+          reason: `Parent agent has reached the maximum of ${config.phase1MaxDescendants} descendant agents for Phase 1`,
+        }
+      }
+    }
+
+    // Phase 2 (Months 4-6): 1 loop AI agent per qualified parent
+    if (config.phase === 'phase2_loop_agents' && proposal.isLoopAgent) {
+      const loopCount = Number(parentSelfImp.loopAgentCount ?? 0)
+      if (loopCount >= config.phase2MaxLoopAgents) {
+        return {
+          approved: false,
+          reason: `Parent agent has already created the maximum of ${config.phase2MaxLoopAgents} loop agent for Phase 2`,
+        }
+      }
+    }
 
     // 5. Check department concurrency < maxConcurrencyPerDept
     const deptAgentCount = await db.agent.count({
@@ -146,11 +181,23 @@ export async function submitProposal(proposal: EvolutionProposal): Promise<{
       }
     }
 
-    // All checks passed — create the new agent
+    // All checks passed — create the new agent with genealogy tracking
     const newAgentId = generateAgentId()
     const slug = slugify(`${proposal.proposedName}-${Date.now()}`)
 
-    await db.agent.create({
+    const childSelfImprovement = JSON.stringify({
+      parentAgentId: proposal.parentAgentId,
+      parentAgentName: proposal.parentAgentName,
+      generation: currentGeneration,
+      evolutionReason: proposal.reason,
+      capabilityGap: proposal.capabilityGap,
+      isLoopAgent: Boolean(proposal.isLoopAgent),
+      descendantCount: 0,
+      loopAgentCount: 0,
+      createdAt: new Date().toISOString(),
+    })
+
+    const newAgent = await db.agent.create({
       data: {
         agentId: newAgentId,
         name: proposal.proposedName,
@@ -158,7 +205,7 @@ export async function submitProposal(proposal: EvolutionProposal): Promise<{
         departmentId: proposal.departmentId,
         departmentName: proposal.departmentName,
         purpose: proposal.proposedPurpose,
-        type: proposal.proposedType || 'specialist',
+        type: proposal.isLoopAgent ? 'loop_agent' : proposal.proposedType || 'specialist',
         role: proposal.proposedRole,
         allowedSkills: JSON.stringify(proposal.proposedSkills || []),
         forbiddenSkills: '[]',
@@ -171,16 +218,45 @@ export async function submitProposal(proposal: EvolutionProposal): Promise<{
         approvalRules: '[]',
         handoffRules: '[]',
         qualityChecklist: '[]',
-        selfImprovement: '{}',
+        selfImprovement: childSelfImprovement,
         productivityRules: '{}',
         status: 'active',
         version: 1,
       },
     })
 
+    // Create Initial Version Entry for rollback and auditability
+    try {
+      await db.agentVersion.create({
+        data: {
+          agentId: newAgent.id,
+          version: '1.0.0',
+          changelog: `Initial evolution from parent ${proposal.parentAgentName} (${proposal.parentAgentId}): ${proposal.reason}`,
+          configuration: JSON.stringify(newAgent),
+          createdBy: proposal.parentAgentId,
+        },
+      })
+    } catch {
+      // Continue even if version table fails
+    }
+
+    // Update parent agent's descendant/loop count
+    const updatedSelfImp = {
+      ...parentSelfImp,
+      descendantCount: proposal.isLoopAgent ? proposedDescendantsCount : proposedDescendantsCount + 1,
+      loopAgentCount: proposal.isLoopAgent ? Number(parentSelfImp.loopAgentCount ?? 0) + 1 : Number(parentSelfImp.loopAgentCount ?? 0),
+    }
+
+    await db.agent.update({
+      where: { id: parentAgent.id },
+      data: {
+        selfImprovement: JSON.stringify(updatedSelfImp),
+      },
+    })
+
     return {
       approved: true,
-      reason: `Agent '${proposal.proposedName}' created successfully via evolution`,
+      reason: `Agent '${proposal.proposedName}' created successfully via evolution (Gen-${currentGeneration})`,
       newAgentId,
     }
   } catch (error) {
@@ -200,9 +276,6 @@ export async function getProposals(departmentId?: string): Promise<unknown[]> {
       where.departmentId = departmentId
     }
 
-    // Since there is no parentId or generation field on the Agent model,
-    // we return the most recently created agents (which would include evolution-created ones)
-    // ordered by creation date descending.
     const agents = await db.agent.findMany({
       where,
       orderBy: { createdAt: 'desc' },
@@ -217,18 +290,28 @@ export async function getProposals(departmentId?: string): Promise<unknown[]> {
         departmentName: true,
         purpose: true,
         allowedSkills: true,
+        selfImprovement: true,
         status: true,
         createdAt: true,
         updatedAt: true,
       },
     })
 
-    return agents.map((a) => ({
-      ...a,
-      allowedSkills: safeParseJSON<string[]>(a.allowedSkills, []),
-      createdAt: a.createdAt.toISOString(),
-      updatedAt: a.updatedAt.toISOString(),
-    }))
+    return agents.map((a) => {
+      const selfImp = safeParseJSON<Record<string, unknown>>(a.selfImprovement, {})
+      return {
+        ...a,
+        allowedSkills: safeParseJSON<string[]>(a.allowedSkills, []),
+        genealogy: {
+          parentAgentId: selfImp.parentAgentId ?? null,
+          parentAgentName: selfImp.parentAgentName ?? null,
+          generation: selfImp.generation ?? 0,
+          isLoopAgent: selfImp.isLoopAgent ?? false,
+        },
+        createdAt: a.createdAt.toISOString(),
+        updatedAt: a.updatedAt.toISOString(),
+      }
+    })
   } catch (error) {
     console.error('Failed to get proposals:', error)
     return []
@@ -245,7 +328,7 @@ export async function getEvolutionStats(): Promise<{
   agentsByGeneration: Record<string, number>
 }> {
   try {
-    const [totalAgents, totalDepartments, proposalsThisMonth] = await Promise.all([
+    const [totalAgents, totalDepartments, proposalsThisMonth, allAgents] = await Promise.all([
       db.agent.count(),
       db.department.count(),
       db.agent.count({
@@ -259,17 +342,24 @@ export async function getEvolutionStats(): Promise<{
           },
         },
       }),
+      db.agent.findMany({
+        select: { selfImprovement: true },
+      }),
     ])
 
     const config = await getEvolutionConfigFromDB()
 
-    // Since there is no generation field on the Agent model,
-    // we return a placeholder. Agents created directly are gen-0.
     const agentsByGeneration: Record<string, number> = {
-      '0': totalAgents,
+      '0': 0,
       '1': 0,
       '2': 0,
       '3': 0,
+    }
+
+    for (const agent of allAgents) {
+      const selfImp = safeParseJSON<Record<string, unknown>>(agent.selfImprovement, {})
+      const gen = String(selfImp.generation ?? '0')
+      agentsByGeneration[gen] = (agentsByGeneration[gen] || 0) + 1
     }
 
     return {

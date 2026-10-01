@@ -57,7 +57,7 @@ UPGRADE_START=$(date +%s)
 
 # ── Health check: verify current state ───────────────────────
 log "[Pre-flight] Checking current service health..."
-CURRENT_HEALTH=$(curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:3004/api/health" 2>/dev/null || echo "000")
+CURRENT_HEALTH=$(curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:3011/api/health" 2>/dev/null || echo "000")
 if [[ "${CURRENT_HEALTH}" != "200" ]]; then
     warn "Service is not currently healthy (HTTP ${CURRENT_HEALTH}). Proceeding with caution..."
 else
@@ -184,7 +184,7 @@ UPGRADE_HEALTHY=false
 
 while [[ $(( $(date +%s) - HEALTH_START )) -lt ${HEALTH_TIMEOUT} ]]; do
     if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
-        HTTP_CODE=$(curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:3004/api/health" 2>/dev/null || echo "000")
+        HTTP_CODE=$(curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:3011/api/health" 2>/dev/null || echo "000")
         if [[ "${HTTP_CODE}" == "200" ]]; then
             UPGRADE_HEALTHY=true
             break

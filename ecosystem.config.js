@@ -16,7 +16,7 @@ module.exports = {
     // ── Environment ──────────────────────────────────────────────
     env: {
       NODE_ENV: 'production',
-      PORT: 3000,
+      PORT: process.env.PORT || 3011,
     },
 
     // ── Log Management (PM2 logrotate) ──────────────────────────

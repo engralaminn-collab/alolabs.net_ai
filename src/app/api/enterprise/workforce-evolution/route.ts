@@ -20,6 +20,7 @@ const proposalSchema = z.object({
   reason: z.string().min(1),
   capabilityGap: z.string().min(1),
   generation: z.number().int().min(0).default(0),
+  isLoopAgent: z.boolean().optional(),
 })
 
 export async function GET(request: NextRequest) {
@@ -77,6 +78,7 @@ export async function POST(request: NextRequest) {
       reason: data.reason,
       capabilityGap: data.capabilityGap,
       generation: data.generation,
+      isLoopAgent: data.isLoopAgent,
     })
 
     return NextResponse.json({

@@ -143,7 +143,7 @@ while [[ ${RETRY} -lt ${MAX_RETRIES} ]]; do
     while [[ $(( $(date +%s) - HEALTH_START )) -lt ${HEALTH_TIMEOUT} ]]; do
         if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
             # Try HTTP health check
-            if curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:3004/api/health" 2>/dev/null | grep -q '200'; then
+            if curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:3011/api/health" 2>/dev/null | grep -q '200'; then
                 HEALTHY=true
                 break
             fi
