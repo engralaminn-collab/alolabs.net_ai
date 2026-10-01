@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
+import { compare } from 'bcrypt';
 import { db } from '@/lib/db';
-import { comparePassword, createSessionToken } from '@/lib/auth';
+import { createSessionToken } from '@/lib/auth';
 
 // ─── In-memory brute-force rate limiter ────────────────────────────────
 
@@ -93,7 +94,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const valid = await comparePassword(password, user.passwordHash);
+    const valid = await compare(password, user.passwordHash);
     if (!valid) {
       return NextResponse.json(
         { error: 'Invalid email or password' },
@@ -105,13 +106,21 @@ export async function POST(request: NextRequest) {
     if (user.otpEnabled) {
       // Generate tempToken and store it in Settings so MFA verify can look it up
       const tempToken = crypto.randomBytes(24).toString('hex');
-      await db.settings.create({
-        data: {
-          key: `mfa_temp:${tempToken}`,
-          value: JSON.stringify({ userId: user.id }),
-          type: 'json',
-        },
-      });
+      if (typeof db.settings?.upsert === 'function') {
+        await db.settings.upsert({
+          where: { key: `mfa_temp:${tempToken}` },
+          create: { key: `mfa_temp:${tempToken}`, value: JSON.stringify({ userId: user.id }), type: 'json' },
+          update: { value: JSON.stringify({ userId: user.id }), type: 'json' },
+        });
+      } else if (typeof db.settings?.create === 'function') {
+        await db.settings.create({
+          data: {
+            key: `mfa_temp:${tempToken}`,
+            value: JSON.stringify({ userId: user.id }),
+            type: 'json',
+          },
+        });
+      }
 
       return NextResponse.json({
         user: {
@@ -159,6 +168,7 @@ export async function POST(request: NextRequest) {
       token,
     });
   } catch (error) {
+    console.error('Login error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

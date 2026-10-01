@@ -13,9 +13,13 @@
     "test:ui": "vitest --ui",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
+    "db:generate:mysql": "prisma generate --schema=prisma/schema.mysql.prisma",
+    "db:push:mysql": "prisma db push --schema=prisma/schema.mysql.prisma",
+    "db:generate:schema": "npx tsx scripts/generate-mysql-schema.ts",
+    "db:migrate:mysql": "npx tsx scripts/migrate-sqlite-to-mysql.ts",
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset",
-    "seed:enterprise": "bun run scripts/seed-enterprise-v3.ts"
+    "seed:enterprise": "npx tsx scripts/seed-enterprise-v3.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.11.1",
@@ -62,6 +66,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",

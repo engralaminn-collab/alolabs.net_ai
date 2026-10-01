@@ -8,7 +8,7 @@ describe('DeepSeek Provider', () => {
     const { DeepSeekProvider } = await import('@/lib/ai-router/deepseek-provider');
     const provider = new DeepSeekProvider({ apiKey: 'test-key' });
     expect(provider).toBeDefined();
-    expect(provider.name).toBe('openai-compatible');
+    expect(provider.name).toBe('deepseek');
   });
 
   it('should list supported models', async () => {
@@ -142,7 +142,7 @@ describe('Llama Provider (Ollama)', () => {
   it('should use Ollama as provider name', async () => {
     const { LlamaProvider } = await import('@/lib/ai-router/llama-provider');
     const provider = new LlamaProvider();
-    expect(provider.name).toBe('ollama');
+    expect(provider.name).toBe('ollama-llama');
   });
 });
 

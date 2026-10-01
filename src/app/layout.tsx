@@ -1,19 +1,7 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
-
-const inter = Inter({
-  variable: "--font-inter",
-  subsets: ["latin"],
-  display: "swap",
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const viewport: Viewport = {
   width: 'device-width',
@@ -54,7 +42,7 @@ export default function RootLayout({
         <link rel="apple-touch-icon" href="/icons/icon-192.svg" />
       </head>
       <body
-        className={`${inter.variable} ${geistMono.variable} font-sans antialiased bg-[#F8FAFC] text-[#1E293B]`}
+        className="font-sans antialiased bg-[#F8FAFC] text-[#1E293B]"
       >
         <div className="min-h-screen flex flex-col">
           <ServiceWorkerRegistration />
