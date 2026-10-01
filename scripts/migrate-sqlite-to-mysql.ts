@@ -40,6 +40,7 @@ export async function migrateSQLiteToMySQL(options: MigrateOptions) {
   // Connect to SQLite using better-sqlite3 or sqlite3
   let sqliteDb: any;
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const Database = require('better-sqlite3');
     sqliteDb = new Database(sqlitePath, { readonly: true });
   } catch {

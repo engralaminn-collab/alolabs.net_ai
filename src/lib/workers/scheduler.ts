@@ -4,7 +4,8 @@
  * Supports standard 5-field cron expressions and common presets.
  */
 
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
+const uuidv4 = () => randomUUID();
 import type { CronJob } from './types';
 
 // ──────────────────────────────────────────────────────────────────────────────
