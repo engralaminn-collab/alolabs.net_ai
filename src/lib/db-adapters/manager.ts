@@ -470,9 +470,8 @@ export class DatabaseManager {
         if (connected) return;
 
         try {
-          // @ts-expect-error -- better-sqlite3 is an optional dependency, gracefully handled
-          const SQLiteModule = await import('better-sqlite3') as { default: new (path: string) => any };
-          const Database = SQLiteModule.default;
+          const req = typeof __non_webpack_require__ !== 'undefined' ? __non_webpack_require__ : eval('require');
+          const Database = req('better-sqlite3');
           const dbPath = config.url
             ? config.url.replace('file:', '')
             : config.database ?? ':memory:';

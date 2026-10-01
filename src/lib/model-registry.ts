@@ -31,6 +31,14 @@ export const AI_MODELS: AIModel[] = [
     capabilities: ['analysis', 'creative', 'conversation', 'reasoning'],
   },
   {
+    id: 'llama-3-70b',
+    name: 'LLaMA 3 70B',
+    family: 'llama',
+    provider: 'local',
+    maxContext: 70000,
+    capabilities: ['code_generation', 'analysis', 'conversation', 'data_processing', 'creative'],
+  },
+  {
     id: 'llama-3.1-70b',
     name: 'LLaMA 3.1 70B',
     family: 'llama',

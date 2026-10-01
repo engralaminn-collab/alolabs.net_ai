@@ -54,11 +54,11 @@ if [[ ! -f /etc/os-release ]]; then
     fail "Cannot detect OS. This script requires Ubuntu 22.04."
 fi
 
-OS_ID=$(grep '^ID=' /etc/os-release | cut -d= -f2)
+OS_ID=$(grep '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
 OS_VER=$(grep '^VERSION_ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
-if [[ "${OS_ID}" != "ubuntu" || "${OS_VER%%.*}" != "22" ]]; then
-    warn "This script is designed for Ubuntu 22.04. Detected: ${OS_ID} ${OS_VER}"
-    warn "Continuing anyway, but issues may arise."
+if [[ "${OS_ID}" != "ubuntu" && "${OS_ID}" != "debian" ]]; then
+    warn "This script is designed for Ubuntu 20.04/22.04/24.04 or Debian 11/12. Detected: ${OS_ID} ${OS_VER}"
+    warn "Continuing installation."
 fi
 
 log "============================================================"

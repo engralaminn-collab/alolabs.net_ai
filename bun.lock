@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "nextjs_tailwind_shadcn_ts",
+      "name": "alolabs-agentos",
       "dependencies": {
         "@prisma/client": "^6.11.1",
         "@radix-ui/react-alert-dialog": "^1.1.14",

@@ -5,7 +5,8 @@
  * Supports delayed jobs, expiration, pause/resume, and callback-based events.
  */
 
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
+const uuidv4 = () => randomUUID();
 import type {
   WorkerJob,
   WorkerType,

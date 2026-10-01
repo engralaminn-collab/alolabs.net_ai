@@ -149,6 +149,7 @@ const SecurityCenterPanel = lazy(() => import('@/components/panels/security-cent
 // Learning
 const FeedbackPanel = lazy(() => import('@/components/panels/feedback-panel'))
 const SelfImprovementPanel = lazy(() => import('@/components/panels/self-improvement-panel'))
+const AgentEvolutionPanel = lazy(() => import('@/components/panels/agent-evolution-panel'))
 const ProductivityPanel = lazy(() => import('@/components/panels/productivity-panel'))
 const AgentTrainingPanel = lazy(() => import('@/components/panels/agent-training-panel'))
 const AgentEvaluationPanel = lazy(() => import('@/components/panels/agent-evaluation-panel'))
@@ -247,6 +248,7 @@ const navItems: NavItem[] = [
   { id: 'security-center', label: 'Security Center', icon: Shield, group: 'Security' },
   { id: 'feedback', label: 'Feedback', icon: MessageSquare, group: 'Learning' },
   { id: 'self-improvement', label: 'Self Improve', icon: TrendingUp, group: 'Learning' },
+  { id: 'agent-evolution', label: 'Evolution & Lineage', icon: GitBranch, group: 'Learning' },
   { id: 'productivity', label: 'Productivity', icon: BarChart2, group: 'Learning' },
   { id: 'agent-training', label: 'Training', icon: ClipboardCheck, group: 'Learning' },
   { id: 'agent-evaluation', label: 'Evaluation', icon: ClipboardCheck, group: 'Learning' },
@@ -439,6 +441,7 @@ export default function AgentHubShell() {
       'audit-logs': <AuditLogsPanel />,
       'memory-center': <MemoryPanel />,
       'self-improvement': <SelfImprovementPanel />,
+      'agent-evolution': <AgentEvolutionPanel />,
       'productivity': <ProductivityPanel />,
       'api-keys': <ApiKeysPanel />,
       'webhooks': <WebhooksPanel />,

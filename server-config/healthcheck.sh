@@ -9,7 +9,7 @@ set -Eeuo pipefail
 APP_USER="alohub"
 INSTALL_DIR="/opt/alolabs/agent-hub"
 DB_PATH="$INSTALL_DIR/shared/data/alolabs.db"
-HEALTH_URL="http://localhost:3000/api/health"
+HEALTH_URL="http://localhost:3011/api/health"
 APP_OK=false
 DB_OK=false
 REDIS_OK=false

@@ -166,13 +166,19 @@ export async function completeJob(
   jobId: string,
   result?: Record<string, unknown> | string | number | boolean | null,
 ): Promise<QueueItemData> {
+  const updateData: Record<string, unknown> = {
+    status: 'completed',
+    completedAt: new Date(),
+    error: null,
+  };
+
+  if (result !== undefined) {
+    updateData.payload = typeof result === 'string' ? result : JSON.stringify(result);
+  }
+
   const item = await db.queueItem.update({
     where: { id: jobId },
-    data: {
-      status: 'completed',
-      completedAt: new Date(),
-      error: null,
-    },
+    data: updateData,
   });
 
   return toQueueItemData(item);

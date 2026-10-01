@@ -136,7 +136,7 @@ HEALTHY=false
 
 while [[ $(( $(date +%s) - HEALTH_START )) -lt ${HEALTH_TIMEOUT} ]]; do
     if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
-        HTTP_CODE=$(curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:3004/api/health" 2>/dev/null || echo "000")
+        HTTP_CODE=$(curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:3011/api/health" 2>/dev/null || echo "000")
         if [[ "${HTTP_CODE}" == "200" ]]; then
             HEALTHY=true
             break

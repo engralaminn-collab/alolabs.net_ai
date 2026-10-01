@@ -72,9 +72,8 @@ export class SQLiteAdapter implements BaseDatabaseAdapter {
     const dbPath = getDbPath(this.config);
 
     try {
-      // @ts-expect-error -- better-sqlite3 is an optional dependency
-      const SQLiteModule = await import('better-sqlite3') as { default: new (path: string) => any };
-      const Database = SQLiteModule.default;
+      const req = typeof __non_webpack_require__ !== 'undefined' ? __non_webpack_require__ : eval('require');
+      const Database = req('better-sqlite3');
 
       this._db = new Database(dbPath);
       this._db.pragma('journal_mode = WAL');

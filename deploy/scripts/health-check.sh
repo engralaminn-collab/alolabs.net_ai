@@ -11,7 +11,7 @@ set -euo pipefail
 # ── Configuration ────────────────────────────────────────────
 APP_DIR="/opt/alolabs/agent-hub"
 SERVICE_NAME="alolabs-agent-hub"
-APP_PORT=3004
+APP_PORT=3011
 DB_HOST="127.0.0.1"
 DB_PORT=3306
 DB_NAME="alohub_production"

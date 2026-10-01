@@ -14,7 +14,7 @@ WorkingDirectory=/opt/alolabs-aismh/current
 
 EnvironmentFile=-/opt/alolabs-aismh/shared/.env
 Environment=NODE_ENV=production
-Environment=PORT=3000
+Environment=PORT=3011
 Environment=HOSTNAME=0.0.0.0
 Environment=NEXT_TELEMETRY_DISABLED=1
 

@@ -3,6 +3,7 @@
  * ALO Labs AIOS — Singleton access to the 100-department registry.
  */
 
+import { DepartmentRegistryImpl } from './registry';
 export type { DepartmentConfig, DepartmentRegistry } from './types';
 export { DepartmentRegistryImpl } from './registry';
 

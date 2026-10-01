@@ -16,7 +16,8 @@
  * - Events-per-second tracking
  */
 
-import { createServer, type Server as HttpServer } from 'http';
+import { createServer } from 'http';
+import type { Server as HttpServer } from 'http';
 import type {
   RealTimeServerOptions,
   RealTimeEventType,

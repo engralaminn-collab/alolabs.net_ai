@@ -126,10 +126,10 @@ else
 fi
 
 # Check app port
-if ss -tlnp 2>/dev/null | grep -q ":3004.*0.0.0.0"; then
-    warn "App listening on 0.0.0.0:3004 (should be behind Nginx, consider binding to 127.0.0.1)"
-elif ss -tlnp 2>/dev/null | grep -q ":3004"; then
-    ok "App listening on port 3004"
+if ss -tlnp 2>/dev/null | grep -q ":3011.*0.0.0.0"; then
+    warn "App listening on 0.0.0.0:3011 (should be behind Nginx, consider binding to 127.0.0.1)"
+elif ss -tlnp 2>/dev/null | grep -q ":3011"; then
+    ok "App listening on port 3011"
 fi
 
 # ── 3. SSL Certificate Checks ────────────────────────────────

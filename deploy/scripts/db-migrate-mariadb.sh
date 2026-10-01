@@ -138,22 +138,40 @@ cp "${APP_DIR}/.env" "${BACKUP_DIR}/.env.bak" 2>/dev/null || true
 ok "Backup: ${BACKUP_DIR}"
 
 # ── Step 1: Push schema to MariaDB ────────────────────────────
-log "[Step 1/5] Pushing Prisma schema to MariaDB..."
+log "[Step 1/5] Preparing and pushing Prisma schema to MariaDB..."
 cd "${APP_DIR}"
+
+# Ensure schema.mysql.prisma is up-to-date with proper @db.LongText types
+if command -v bun &>/dev/null; then
+    bun run scripts/generate-mysql-schema.ts || npx tsx scripts/generate-mysql-schema.ts || node scripts/generate-mysql-schema.ts 2>/dev/null || true
+elif command -v npx &>/dev/null; then
+    npx tsx scripts/generate-mysql-schema.ts || node scripts/generate-mysql-schema.ts 2>/dev/null || true
+fi
 
 # Temporarily override DATABASE_URL to point to MariaDB
 export DATABASE_URL="mysql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 
-# Generate Prisma client for MySQL
-if bun run db:generate 2>&1; then
-    ok "Prisma client generated for MariaDB"
-else
-    fail "Prisma generate failed. Check your DATABASE_URL in .env."
+# Choose schema file (prefer schema.mysql.prisma to prevent ERROR 1406 Data too long)
+SCHEMA_FILE="prisma/schema.prisma"
+if [[ -f "${APP_DIR}/prisma/schema.mysql.prisma" ]]; then
+    SCHEMA_FILE="prisma/schema.mysql.prisma"
+    log "Using MySQL-optimized schema: ${SCHEMA_FILE}"
 fi
 
-# Push schema (creates tables without data)
-if bun run db:push --accept-data-loss 2>&1; then
+# Generate Prisma client for MySQL
+if command -v bun &>/dev/null && bun run db:generate --schema="${SCHEMA_FILE}" 2>&1; then
+    ok "Prisma client generated for MariaDB"
+elif npx prisma generate --schema="${SCHEMA_FILE}" 2>&1; then
+    ok "Prisma client generated for MariaDB via npx"
+else
+    warn "Prisma generate skipped or using existing client"
+fi
+
+# Push schema (creates tables with proper LONGTEXT columns)
+if command -v bun &>/dev/null && bun run db:push --schema="${SCHEMA_FILE}" --accept-data-loss 2>&1; then
     ok "Schema pushed to MariaDB"
+elif npx prisma db push --schema="${SCHEMA_FILE}" --accept-data-loss 2>&1; then
+    ok "Schema pushed to MariaDB via npx"
 else
     fail "Schema push failed. Check MariaDB connection and permissions."
 fi
@@ -218,6 +236,8 @@ for table in ${SQLITE_TABLES}; do
     # Import into MariaDB via LOAD DATA
     if ${MYSQL_CMD} --local-infile=1 -e "
         SET FOREIGN_KEY_CHECKS=0;
+        SET sql_mode='';
+        SET NAMES utf8mb4;
         LOAD DATA LOCAL INFILE '${CSV_FILE}'
         INTO TABLE \`${table}\`
         FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '\"'
@@ -231,6 +251,7 @@ for table in ${SQLITE_TABLES}; do
     else
         # Fallback: INSERT statements
         warn "  LOAD DATA failed for ${table}, trying INSERT fallback..."
+        ${MYSQL_CMD} -e "SET FOREIGN_KEY_CHECKS=0; SET sql_mode=''; SET NAMES utf8mb4;" 2>/dev/null || true
         sqlite3 "${SQLITE_DB}" ".mode insert ${table}" "SELECT ${COMMON_COLS} FROM \"${table}\";" 2>/dev/null \
             | sed "s/INSERT INTO TABLE/INSERT INTO \`${table}\`/" \
             | ${MYSQL_CMD} 2>/dev/null && ok "  ${table}: migrated via INSERT" && MIGRATED=$(( MIGRATED + 1 )) \
@@ -305,6 +326,6 @@ log "SQLite backup:   ${BACKUP_DIR}"
 log ""
 log "Next steps:"
 log "  1. Verify the app works: systemctl restart alolabs-agent-hub"
-log "  2. Check the app:        curl http://127.0.0.1:3004/api/health"
+log "  2. Check the app:        curl http://127.0.0.1:3011/api/health"
 log "  3. Run health check:     bash ${APP_DIR}/deploy/scripts/health-check.sh"
 log "  4. If issues arise, restore: bash ${APP_DIR}/deploy/scripts/restore.sh --backup-id $(basename ${BACKUP_DIR})"

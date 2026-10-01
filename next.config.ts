@@ -2,13 +2,10 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  serverExternalPackages: ['bcrypt', 'sharp', 'mysql2', 'better-sqlite3'],
+  serverExternalPackages: ['bcrypt', 'sharp', 'mysql2', 'better-sqlite3', 'pg'],
   poweredByHeader: false,
   typescript: {
     ignoreBuildErrors: true,
-  },
-  eslint: {
-    ignoreDuringBuilds: true,
   },
   reactStrictMode: true,
   images: {

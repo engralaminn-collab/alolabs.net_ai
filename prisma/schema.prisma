@@ -2322,3 +2322,344 @@ model ConversationMessage {
   @@index([conversationId])
   @@index([createdAt])
 }
+// ============================================================
+// AGENT EVOLUTION, LINEAGE, AND QUALIFICATION SYSTEM
+// ============================================================
+
+model AgentLineage {
+  id               String   @id @default(cuid())
+  agentId          String   @unique
+  rootAgentId      String
+  parentAgentId    String?
+  generation       Int      @default(0)
+  lineagePath      String
+  creationReason   String
+  creatorAgentId   String?
+  approvingEntity  String   @default("system")
+  lifecycleStatus  String   @default("active") // active, observing, suspended, retired
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([rootAgentId])
+  @@index([parentAgentId])
+  @@index([generation])
+  @@index([lifecycleStatus])
+}
+
+model AgentEvolutionPolicy {
+  id                     String   @id @default(cuid())
+  name                   String   @unique
+  phase                  String   @default("phase1_descendants") // phase1_descendants, phase2_loop_agents, phase3_department_models, locked
+  maxGeneration          Int      @default(3)
+  maxChildrenPerAgent    Int      @default(3)
+  monthlyCreationLimit   Int      @default(100)
+  maxPopulation          Int      @default(5000)
+  maxConcurrencyPerDept  Int      @default(50)
+  minTaskSuccessRate     Float    @default(0.85)
+  minUptimePercent       Float    @default(99.0)
+  minCompletedTasks      Int      @default(50)
+  maxErrorRate           Float    @default(0.05)
+  maxSafetyViolations    Int      @default(0)
+  requireHumanApproval   Boolean  @default(true)
+  requireMultiStepAuth   Boolean  @default(false)
+  isGlobalStopActive     Boolean  @default(false)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+}
+
+model AgentEvolutionProposal {
+  id                   String   @id @default(cuid())
+  proposalId           String   @unique
+  parentAgentId        String
+  parentAgentName      String
+  departmentId         String
+  departmentName       String
+  proposedRole         String
+  proposedName         String
+  proposedPurpose      String
+  proposedSkills       String   // JSON array
+  proposedTools        String   // JSON array
+  proposedModel        String?
+  proposedKnowledge    String   // JSON array
+  expectedWorkload     String?
+  expectedBusinessValue String?
+  estimatedTokenBudget Int      @default(100000)
+  estimatedCostBudget  Float    @default(50.0)
+  securityRequirements String   // JSON array
+  successCriteria      String   // JSON array
+  capabilityGap        String
+  reason               String
+  generation           Int      @default(1)
+  isLoopAgent          Boolean  @default(false)
+  qualificationScore   Float    @default(0.0)
+  qualificationDetails String   // JSON
+  status               String   @default("proposed") // proposed, observing, evaluated, approved, rejected, created
+  reviewNotes          String?
+  reviewedBy           String?
+  reviewedAt           DateTime?
+  createdAgentId       String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([parentAgentId])
+  @@index([departmentId])
+  @@index([status])
+}
+
+model AgentEvolutionRun {
+  id               String   @id @default(cuid())
+  runId            String   @unique
+  proposalId       String
+  parentAgentId    String
+  childAgentId     String
+  status           String   @default("running") // running, completed, failed, rolled_back
+  startedAt        DateTime @default(now())
+  completedAt      DateTime?
+  metricsSnapshot  String   // JSON
+  logs             String   // JSON
+  error            String?
+
+  @@index([proposalId])
+  @@index([parentAgentId])
+  @@index([childAgentId])
+}
+
+model AgentQualification {
+  id                     String   @id @default(cuid())
+  agentId                String   @unique
+  state                  String   @default("UNQUALIFIED") // UNQUALIFIED, OBSERVING, QUALIFIED, PROPOSAL_ALLOWED, CREATION_APPROVED, CHILD_RUNNING, CHILD_EVALUATED, ACTIVE, SUSPENDED, RETIRED
+  taskSuccessRate        Float    @default(0.0)
+  reliabilityScore       Float    @default(0.0)
+  errorRate              Float    @default(0.0)
+  safetyViolations       Int      @default(0)
+  policyViolations       Int      @default(0)
+  toolExecutionSuccess   Float    @default(0.0)
+  customerOutcomeScore   Float    @default(0.0)
+  costEfficiencyScore    Float    @default(0.0)
+  tokenEfficiencyScore   Float    @default(0.0)
+  responseQualityScore   Float    @default(0.0)
+  knowledgeAccuracy      Float    @default(0.0)
+  memoryQuality          Float    @default(0.0)
+  workflowCompletionRate Float    @default(0.0)
+  uptimePercent          Float    @default(100.0)
+  humanFeedbackScore     Float?
+  totalTasksEvaluated    Int      @default(0)
+  lastEvaluatedAt        DateTime @default(now())
+  qualificationReason    String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@index([state])
+}
+
+model AgentLearningCycle {
+  id                  String   @id @default(cuid())
+  cycleId             String   @unique
+  agentId             String
+  parentAgentId       String?
+  observations        String   // JSON
+  failures            String   // JSON
+  proposedImprovement String   // JSON
+  evaluationResults   String   // JSON
+  testResults         String   // JSON
+  approved            Boolean  @default(false)
+  approvedBy          String?
+  deployedVersion     String?
+  rollbackVersion     String?
+  metricsBefore       String   // JSON
+  metricsAfter        String?  // JSON
+  status              String   @default("analyzing") // observing, analyzing, simulating, approved, deployed, rolled_back, completed
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([agentId])
+  @@index([parentAgentId])
+  @@index([status])
+}
+
+model AgentImprovementProposal {
+  id               String   @id @default(cuid())
+  agentId          String
+  targetType       String   // prompt, task_strategy, workflow, skill_selection, tool_selection, knowledge_retrieval, planning
+  currentConfig    String   // JSON
+  proposedConfig   String   // JSON
+  rationale        String
+  safetyAssessment String   // JSON
+  status           String   @default("pending") // pending, approved, rejected, applied, rolled_back
+  appliedVersion   Int?
+  evaluatedAt      DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([agentId])
+  @@index([targetType])
+  @@index([status])
+}
+
+model AgentEvaluation {
+  id               String   @id @default(cuid())
+  agentId          String
+  evaluatorId      String   @default("system")
+  evaluationType   String   // benchmark, task_run, human_review, safety_audit
+  score            Float
+  accuracy         Float?
+  latencyMs        Int?
+  tokenEfficiency  Float?
+  safetyScore      Float?
+  notes            String?
+  detailedResults  String   // JSON
+  createdAt        DateTime @default(now())
+
+  @@index([agentId])
+  @@index([evaluationType])
+}
+
+model AgentResourceBudget {
+  id                   String   @id @default(cuid())
+  agentId              String   @unique
+  monthlyTokenLimit    Int      @default(1000000)
+  monthlyCostLimit     Float    @default(100.0)
+  currentTokensUsed    Int      @default(0)
+  currentCostUsed      Float    @default(0.0)
+  maxExecutionRateMin  Int      @default(60)
+  maxMemorySizeMb      Int      @default(256)
+  maxRuntimeMsPerTask  Int      @default(60000)
+  isBudgetExceeded     Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model AgentGovernanceEvent {
+  id          String   @id @default(cuid())
+  eventType   String   // EVOLUTION_PROPOSAL, EVOLUTION_APPROVED, EMERGENCY_STOP, ROLLBACK, QUALIFICATION_CHANGE, POLICY_UPDATE, SUSPENSION
+  actorId     String
+  agentId     String?
+  lineagePath String?
+  details     String   // JSON
+  severity    String   @default("info") // info, warning, critical
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  @@index([eventType])
+  @@index([agentId])
+  @@index([createdAt])
+}
+
+model DepartmentModel {
+  id                  String   @id @default(cuid())
+  departmentId        String   @unique
+  departmentCode      String
+  departmentName      String
+  modelType           String   @default("shared_foundation") // shared_foundation, department_specific, fine_tuned, lora_adapter, local_model, external_api
+  activeModelId       String
+  activeProvider      String   @default("groq")
+  modelVersion        String   @default("1.0.0")
+  capabilities        String   // JSON array
+  systemConstitution  String   // JSON or text
+  departmentKnowledge String   // JSON
+  departmentMemory    String   // JSON
+  fallbackModelId     String   @default("llama-3.3-70b-versatile")
+  fallbackProvider    String   @default("groq")
+  deploymentStatus    String   @default("active") // active, canary, training, validating, rollback
+  monthlyBudget       Float    @default(500.0)
+  currentCostMonth    Float    @default(0.0)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([departmentCode])
+  @@index([deploymentStatus])
+}
+
+model DepartmentModelVersion {
+  id                String   @id @default(cuid())
+  departmentId      String
+  version           String
+  modelId           String
+  provider          String
+  adapterConfig     String?  // JSON
+  benchmarkScore    Float?
+  trainingDataRef   String?
+  evaluationSummary String   // JSON
+  status            String   @default("staging") // staging, active, archived, rolled_back
+  changelog         String?
+  deployedAt        DateTime?
+  createdAt         DateTime @default(now())
+
+  @@unique([departmentId, version])
+  @@index([departmentId])
+  @@index([status])
+}
+
+model DepartmentModelEvaluation {
+  id                 String   @id @default(cuid())
+  departmentId       String
+  modelVersionId     String
+  datasetName        String
+  accuracy           Float
+  relevanceScore     Float
+  hallucinationRate  Float    @default(0.0)
+  latencyMsAvg       Int
+  tokensPerSec       Float?
+  passedValidation   Boolean  @default(true)
+  evaluationLog      String   // JSON
+  evaluatedAt        DateTime @default(now())
+
+  @@index([departmentId])
+  @@index([modelVersionId])
+}
+
+model ModelTrainingRun {
+  id                  String   @id @default(cuid())
+  runId               String   @unique
+  departmentId        String
+  baseModel           String
+  targetModelName     String
+  trainingDatasetRef  String
+  datasetRowCount     Int      @default(0)
+  status              String   @default("queued") // queued, preparing, training, validating, completed, failed
+  progressPercent     Float    @default(0.0)
+  loss                Float?
+  epochsCompleted     Int      @default(0)
+  totalEpochs         Int      @default(3)
+  trainingDurationSec Int      @default(0)
+  metricsLog          String   // JSON
+  errorMessage        String?
+  startedAt           DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime @default(now())
+
+  @@index([departmentId])
+  @@index([status])
+}
+
+model ModelDeployment {
+  id                  String   @id @default(cuid())
+  departmentId        String
+  modelVersionId      String
+  strategy            String   @default("direct") // direct, canary, blue_green
+  trafficPercent      Int      @default(100)
+  status              String   @default("active") // staging, active, retired, rolled_back
+  healthMetrics       String   // JSON
+  deployedBy          String   @default("system")
+  deployedAt          DateTime @default(now())
+  rolledBackAt        DateTime?
+  rollbackReason      String?
+
+  @@index([departmentId])
+  @@index([status])
+}
+
+model EvolutionEmergencyStop {
+  id           String   @id @default(cuid())
+  scope        String   @default("global") // global, department, lineage, agent
+  targetId     String?  // null if global, or deptId / lineageId / agentId
+  reason       String
+  triggeredBy  String
+  isActive     Boolean  @default(true)
+  activatedAt  DateTime @default(now())
+  resolvedAt   DateTime?
+  resolution   String?
+
+  @@index([scope])
+  @@index([isActive])
+}

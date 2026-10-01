@@ -153,6 +153,7 @@ export const useAppStore = create<AppState>((set) => ({
   // ─── Auth Actions ────────────────────────────────────────────────────────
   login: (user, token) => {
     if (typeof window !== 'undefined') {
+      localStorage.setItem('token', token)
       localStorage.setItem('alo_token', token)
       localStorage.setItem('user', JSON.stringify(user))
       window.dispatchEvent(new Event('auth-change'))
@@ -162,6 +163,7 @@ export const useAppStore = create<AppState>((set) => ({
 
   logout: () => {
     if (typeof window !== 'undefined') {
+      localStorage.removeItem('token')
       localStorage.removeItem('alo_token')
       localStorage.removeItem('user')
       window.dispatchEvent(new Event('auth-change'))
@@ -188,7 +190,7 @@ export const useAppStore = create<AppState>((set) => ({
   // ─── Init (hydrate from localStorage) ────────────────────────────────────
   _init: () => {
     if (typeof window !== 'undefined') {
-      const token = localStorage.getItem('alo_token')
+      const token = localStorage.getItem('token') || localStorage.getItem('alo_token')
       const userStr = localStorage.getItem('user')
       if (token && userStr) {
         try {
