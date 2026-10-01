@@ -2,142 +2,451 @@ name: Deploy to Production
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.github/workflows/backup.yml'
+      - "**.md"
+      - "docs/**"
+      - ".github/workflows/backup.yml"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/security-scan.yml"
+
   workflow_dispatch:
     inputs:
       skip_health_check:
-        description: 'Skip post-deploy health check'
+        description: "Skip post-deploy health check"
         required: false
-        default: 'false'
+        default: "false"
         type: choice
         options:
-          - 'false'
-          - 'true'
+          - "false"
+          - "true"
+
       rollback_on_failure:
-        description: 'Auto-rollback on health check failure'
+        description: "Auto-rollback on health check failure"
         required: false
-        default: 'true'
+        default: "true"
         type: choice
         options:
-          - 'true'
-          - 'false'
+          - "true"
+          - "false"
+
+      run_database_migration:
+        description: "Run Prisma production migration"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 concurrency:
   group: deploy-production
-  cancel-in-progress: true
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  APP_DIR: /opt
+  APP_NAME: agentos-app
+  SERVICE_PORT: "3011"
+  HEALTH_URL: http://127.0.0.1:3011/api/health
+  PUBLIC_HEALTH_URL: https://alolabs.net/api/health
+  BUN_VERSION: "1.3.14"
 
 jobs:
-  deploy:
-    name: Deploy to Server
+  pre-deploy:
+    name: Production Pre-Deploy Verification
     runs-on: ubuntu-latest
     environment: production
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify deployment files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "============================================================"
+          echo "ALO LABS AIOS — PRODUCTION PRE-DEPLOY"
+          echo "============================================================"
+
+          test -f package.json
+          test -f bun.lock || test -f bun.lockb
+
+          echo "Repository verification: PASS"
+          echo "Commit: $(git rev-parse HEAD)"
+          echo "Branch: ${GITHUB_REF_NAME}"
+
+  deploy:
+    name: Deploy ALO Labs AIOS
+    runs-on: ubuntu-latest
+    needs:
+      - pre-deploy
+    environment: production
+
+    steps:
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          RUN_DATABASE_MIGRATION: ${{ inputs.run_database_migration || 'false' }}
+          ROLLBACK_ON_FAILURE: ${{ inputs.rollback_on_failure || 'true' }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
+          envs: RUN_DATABASE_MIGRATION,ROLLBACK_ON_FAILURE
+          command_timeout: 20m
+          script_stop: true
           script: |
             set -euo pipefail
 
-            APP_DIR="/opt/alolabs/agent-hub"
-            SERVICE_NAME="alolabs-agent-hub"
-            HEALTH_TIMEOUT=90
+            APP_DIR="/opt"
+            APP_NAME="agentos-app"
+            SERVICE_PORT="3011"
+            HEALTH_URL="http://127.0.0.1:${SERVICE_PORT}/api/health"
             MAX_RETRIES=3
+            HEALTH_TIMEOUT=90
 
-            echo "==> [1/4] Pulling latest code..."
+            echo "============================================================"
+            echo "ALO LABS AIOS — PRODUCTION DEPLOYMENT"
+            echo "============================================================"
+            echo "APP_DIR=${APP_DIR}"
+            echo "APP_NAME=${APP_NAME}"
+            echo "PORT=${SERVICE_PORT}"
+            echo "============================================================"
+
             cd "${APP_DIR}"
-            CURRENT_COMMIT=$(git rev-parse HEAD)
-            git fetch origin main
-            NEW_COMMIT=$(git rev-parse origin/main)
 
-            if [[ "${CURRENT_COMMIT}" == "${NEW_COMMIT}" ]]; then
-              echo "Already up to date. No changes to deploy."
-              exit 0
+            if [[ ! -f package.json ]]; then
+              echo "ERROR: ${APP_DIR}/package.json not found"
+              exit 1
             fi
 
-            echo "Deploying: ${CURRENT_COMMIT:0:8} → ${NEW_COMMIT:0:8}"
+            if [[ ! -f .env ]]; then
+              echo "ERROR: Production .env not found"
+              exit 1
+            fi
 
-            # Save previous commit for rollback
+            echo
+            echo "==> [1/8] Saving current production state..."
+
+            CURRENT_COMMIT="$(git rev-parse HEAD)"
+            CURRENT_BRANCH="$(git branch --show-current || true)"
+
+            echo "Current commit: ${CURRENT_COMMIT}"
+            echo "Current branch: ${CURRENT_BRANCH}"
+
+            mkdir -p "${APP_DIR}/logs"
+            mkdir -p "${APP_DIR}/deploy-backups"
+
             echo "${CURRENT_COMMIT}" > "${APP_DIR}/.deploy-previous-commit"
 
-            git reset --hard origin/main
+            if pm2 describe "${APP_NAME}" >/dev/null 2>&1; then
+              pm2 jlist > "${APP_DIR}/logs/pre-deploy-pm2.json" || true
+            fi
 
-            echo "==> [2/4] Installing dependencies..."
-            bun install --frozen-lockfile || bun install
+            echo
+            echo "==> [2/8] Fetching production branch..."
 
-            echo "==> [3/4] Database migration..."
-            bun run db:push --accept-data-loss 2>&1 || bun run db:generate
+            git fetch --prune origin main
 
-            echo "==> [3.5/4] Building application..."
+            NEW_COMMIT="$(git rev-parse origin/main)"
+
+            echo "Current: ${CURRENT_COMMIT}"
+            echo "Target : ${NEW_COMMIT}"
+
+            if [[ "${CURRENT_COMMIT}" == "${NEW_COMMIT}" ]]; then
+              echo "Already running the latest main commit."
+            else
+              echo "Deploying ${CURRENT_COMMIT:0:12} -> ${NEW_COMMIT:0:12}"
+
+              git status --short
+
+              git reset --hard origin/main
+            fi
+
+            echo
+            echo "==> [3/8] Verifying production environment..."
+
+            if [[ ! -s .env ]]; then
+              echo "ERROR: .env is empty"
+              exit 1
+            fi
+
+            if ! grep -q '^DATABASE_URL=' .env; then
+              echo "ERROR: DATABASE_URL is missing from production .env"
+              exit 1
+            fi
+
+            echo "Production environment file: PRESENT"
+            echo "DATABASE_URL: PRESENT"
+
+            echo
+            echo "==> [4/8] Installing dependencies..."
+
+            if [[ -f bun.lock ]]; then
+              bun install --frozen-lockfile
+            elif [[ -f bun.lockb ]]; then
+              bun install --frozen-lockfile
+            else
+              echo "ERROR: Bun lockfile not found"
+              exit 1
+            fi
+
+            echo
+            echo "==> [5/8] Prisma verification..."
+
+            bunx prisma generate
+
+            bunx prisma validate
+
+            echo "Prisma validation: PASS"
+
+            if [[ "${RUN_DATABASE_MIGRATION}" == "true" ]]; then
+              echo
+              echo "==> Production database migration requested"
+
+              if [[ -x scripts/migrate-production.sh ]]; then
+                bash scripts/migrate-production.sh
+              elif [[ -f prisma/migrations/migration_lock.toml ]]; then
+                echo "Running Prisma migrate deploy..."
+                bunx prisma migrate deploy
+              else
+                echo "ERROR: No approved production migration mechanism found."
+                echo "Database migration was NOT performed."
+                exit 1
+              fi
+            else
+              echo
+              echo "==> Production database migration: SKIPPED"
+              echo "Use workflow_dispatch with run_database_migration=true"
+              echo "only after migration files have been verified."
+            fi
+
+            echo
+            echo "==> [6/8] Building production application..."
+
             NODE_ENV=production bun run build
 
-            echo "==> [4/4] Restarting service..."
-            systemctl daemon-reload
+            echo
+            echo "Build completed successfully."
+
+            if [[ ! -d .next ]]; then
+              echo "ERROR: .next directory missing after build"
+              exit 1
+            fi
+
+            echo
+            echo "==> [7/8] Restarting production application..."
+
+            if command -v pm2 >/dev/null 2>&1; then
+
+              if pm2 describe "${APP_NAME}" >/dev/null 2>&1; then
+                echo "PM2 application exists: ${APP_NAME}"
+                pm2 restart "${APP_NAME}" --update-env
+              else
+                echo "ERROR: PM2 application ${APP_NAME} does not exist."
+                echo "Deployment will NOT invent a new production process."
+                exit 1
+              fi
+
+              pm2 save
+
+            else
+              echo "ERROR: PM2 is not installed on the production server."
+              exit 1
+            fi
+
+            echo
+            echo "==> [8/8] Local production health check..."
 
             RETRY=0
-            while [[ ${RETRY} -lt ${MAX_RETRIES} ]]; do
-              systemctl restart "${SERVICE_NAME}"
-              echo "Waiting for health check (timeout: ${HEALTH_TIMEOUT}s)..."
+            HEALTHY=false
 
-              HEALTH_START=$(date +%s)
-              HEALTHY=false
+            while [[ ${RETRY} -lt ${MAX_RETRIES} ]]; do
+
+              echo "Health attempt ${RETRY}/${MAX_RETRIES}"
+
+              HEALTH_START="$(date +%s)"
 
               while [[ $(( $(date +%s) - HEALTH_START )) -lt ${HEALTH_TIMEOUT} ]]; do
                 if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
                   if curl -sf -o /dev/null -w '%{http_code}' "http://127.0.0.1:3011/api/health" 2>/dev/null | grep -q '200'; then
+
+                if pm2 describe "${APP_NAME}" >/dev/null 2>&1; then
+
+                  HTTP_CODE="$(curl \
+                    --silent \
+                    --show-error \
+                    --output /tmp/alolabs-health.json \
+                    --write-out '%{http_code}' \
+                    --max-time 10 \
+                    "${HEALTH_URL}" || true)"
+
+                  echo "Health HTTP code: ${HTTP_CODE}"
+
+                  if [[ "${HTTP_CODE}" == "200" ]]; then
+                    echo "Health response:"
+                    cat /tmp/alolabs-health.json || true
+                    echo
                     HEALTHY=true
                     break
                   fi
                 fi
+
                 sleep 3
               done
 
               if [[ "${HEALTHY}" == "true" ]]; then
-                echo "✅ Service is healthy"
                 break
               fi
 
-              RETRY=$(( RETRY + 1 ))
-              echo "Health check failed (attempt ${RETRY}/${MAX_RETRIES})"
+              RETRY=$((RETRY + 1))
 
-              if [[ ${RETRY} -ge ${MAX_RETRIES} ]]; then
-                echo "❌ Health check failed after ${MAX_RETRIES} attempts"
-                if [[ "${{ inputs.rollback_on_failure || 'true' }}" == "true" ]]; then
-                  echo "==> Rolling back to ${CURRENT_COMMIT:0:8}..."
-                  git reset --hard "${CURRENT_COMMIT}"
-                  bun install --frozen-lockfile || bun install
-                  bun run db:generate
-                  NODE_ENV=production bun run build
-                  systemctl restart "${SERVICE_NAME}"
-                  sleep 10
-                  echo "Rollback complete. Check: journalctl -u ${SERVICE_NAME} -n 50"
-                fi
-                exit 1
+              echo "Health check failed: attempt ${RETRY}/${MAX_RETRIES}"
+
+              if [[ ${RETRY} -lt ${MAX_RETRIES} ]]; then
+                sleep 5
               fi
-              sleep 5
             done
 
-            echo "==> Deployment successful"
-            echo "${NEW_COMMIT:0:8} deployed at $(date -Iseconds)" >> "${APP_DIR}/logs/deployments.log"
+            if [[ "${HEALTHY}" != "true" ]]; then
 
-      - name: Post-deploy health check
+              echo
+              echo "============================================================"
+              echo "DEPLOYMENT HEALTH CHECK FAILED"
+              echo "============================================================"
+
+              pm2 status || true
+              pm2 logs "${APP_NAME}" --lines 100 --nostream || true
+
+              if [[ "${ROLLBACK_ON_FAILURE}" == "true" ]]; then
+
+                echo
+                echo "==> ROLLING BACK..."
+
+                PREVIOUS_COMMIT="$(cat "${APP_DIR}/.deploy-previous-commit")"
+
+                if [[ -n "${PREVIOUS_COMMIT}" ]]; then
+
+                  echo "Rollback commit: ${PREVIOUS_COMMIT}"
+
+                  git reset --hard "${PREVIOUS_COMMIT}"
+
+                  if [[ -f bun.lock ]]; then
+                    bun install --frozen-lockfile
+                  elif [[ -f bun.lockb ]]; then
+                    bun install --frozen-lockfile
+                  fi
+
+                  bunx prisma generate
+
+                  NODE_ENV=production bun run build
+
+                  pm2 restart "${APP_NAME}" --update-env
+                  pm2 save
+
+                  sleep 10
+
+                  echo
+                  echo "Rollback health check..."
+
+                  ROLLBACK_HTTP_CODE="$(curl \
+                    --silent \
+                    --output /tmp/alolabs-rollback-health.json \
+                    --write-out '%{http_code}' \
+                    --max-time 10 \
+                    "${HEALTH_URL}" || true)"
+
+                  echo "Rollback HTTP code: ${ROLLBACK_HTTP_CODE}"
+
+                  if [[ "${ROLLBACK_HTTP_CODE}" == "200" ]]; then
+                    echo "Rollback completed and application is responding."
+                  else
+                    echo "WARNING: Rollback application is not healthy."
+                    pm2 logs "${APP_NAME}" --lines 100 --nostream || true
+                  fi
+                fi
+              fi
+
+              exit 1
+            fi
+
+            echo
+            echo "============================================================"
+            echo "LOCAL PRODUCTION HEALTH: PASS"
+            echo "============================================================"
+
+            echo
+            echo "Deployed commit:"
+            git rev-parse HEAD
+
+            echo
+            echo "PM2 status:"
+            pm2 status
+
+            echo
+            echo "Deployment timestamp:"
+            date -Iseconds
+
+            echo
+            echo "${NEW_COMMIT} deployed at $(date -Iseconds)" >> \
+              "${APP_DIR}/logs/deployments.log"
+
+      - name: Public production health check
         if: inputs.skip_health_check != 'true'
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
+          command_timeout: 2m
+          script_stop: true
           script: |
-            bash /opt/alolabs/agent-hub/deploy/scripts/healthcheck.sh --json
-            echo "Exit code: $?"
+            set -euo pipefail
+
+            echo "============================================================"
+            echo "PUBLIC ALO LABS HEALTH CHECK"
+            echo "============================================================"
+
+            HTTP_CODE="$(curl \
+              --silent \
+              --show-error \
+              --output /tmp/alolabs-public-health.json \
+              --write-out '%{http_code}' \
+              --max-time 20 \
+              https://alolabs.net/api/health)"
+
+            echo "HTTP status: ${HTTP_CODE}"
+
+            cat /tmp/alolabs-public-health.json || true
+            echo
+
+            if [[ "${HTTP_CODE}" != "200" ]]; then
+              echo "ERROR: Public health check failed."
+              exit 1
+            fi
+
+            echo "Public health check: PASS"
+
+      - name: Deployment summary
+        if: success()
+        shell: bash
+        run: |
+          echo "============================================================"
+          echo "ALO LABS AIOS — DEPLOYMENT SUCCESS"
+          echo "============================================================"
+          echo "Repository : ${GITHUB_REPOSITORY}"
+          echo "Branch     : ${GITHUB_REF_NAME}"
+          echo "Commit     : ${GITHUB_SHA}"
+          echo "Environment: production"
+          echo "============================================================"
