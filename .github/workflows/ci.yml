@@ -83,20 +83,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: "20"
-          cache: "npm"
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps || npm install --legacy-peer-deps
+        run: bun install --frozen-lockfile || bun install
 
       - name: Generate Prisma client
-        run: npx prisma generate || true
+        run: bunx prisma generate || true
 
       - name: Run test suite
-        run: npm test
+        run: bun run test || npm test
+        env:
+          NODE_ENV: test
+          DATABASE_URL: "file:./dev.db"
+          NEXTAUTH_SECRET: "ci-test-secret-do-not-use-in-production"
+          CSRF_SECRET: "ci-test-csrf-secret-do-not-use-in-production"
+          JWT_SECRET: "ci-test-jwt-secret-do-not-use-in-production"
+          API_GATEWAY_SECRET: "ci-test-gateway-secret-do-not-use-in-production"
 
   build:
     name: Build (Next.js)
