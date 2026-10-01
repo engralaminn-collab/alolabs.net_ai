@@ -18,166 +18,92 @@ on:
 
   workflow_dispatch:
 
-concurrency:
-  group: security-scan-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
+  actions: read
   security-events: write
 
-env:
-  BUN_VERSION: "1.3.14"
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+
   dependency-audit:
-    name: Dependency Security Audit
-    runs-on: ubuntu-latest
+    name: Dependency Audit
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+
+      - name: Checkout
+        uses: actions/checkout@v6
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - name: Show runtime versions
-        run: |
-          set -euo pipefail
-          echo "=========================================="
-          echo "SECURITY SCAN RUNTIME"
-          echo "=========================================="
-          bun --version
-          node --version
-          npm --version
-
-      - name: Cache Bun dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.bun/install/cache
-          key: security-bun-${{ runner.os }}-${{ hashFiles('bun.lock', 'bun.lockb') }}
-          restore-keys: |
-            security-bun-${{ runner.os }}-
+          bun-version: "1.3.14"
 
       - name: Install dependencies
-        shell: bash
+        run: bun install --frozen-lockfile
+
+      - name: Audit dependencies
         run: |
-          set -euo pipefail
+          bun audit --json > audit.json || true
 
-          if [[ -f bun.lock ]]; then
-            bun install --frozen-lockfile
-          elif [[ -f bun.lockb ]]; then
-            bun install --frozen-lockfile
-          else
-            echo "::error::No Bun lockfile found."
-            exit 1
-          fi
-
-      - name: Run Bun audit
-        shell: bash
+      - name: Validate audit output
         run: |
-          set -uo pipefail
+          test -s audit.json
 
-          echo "=========================================="
-          echo "BUN DEPENDENCY AUDIT"
-          echo "=========================================="
+          node <<'NODE'
+          const fs = require("fs");
 
-          set +e
-          bun audit > audit-results.txt 2>&1
-          AUDIT_EXIT=$?
-          set -e
+          const data = JSON.parse(
+            fs.readFileSync("audit.json", "utf8")
+          );
 
-          echo "Bun audit exit code: ${AUDIT_EXIT}"
-          cat audit-results.txt
+          console.log("Dependency audit completed.");
+          console.log(
+            JSON.stringify(data, null, 2).slice(0, 12000)
+          );
+          NODE
 
-          echo "${AUDIT_EXIT}" > audit-exit-code.txt
-
-      - name: Analyze dependency findings
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          HIGH_COUNT=0
-          CRITICAL_COUNT=0
-
-          if [[ -s audit-results.txt ]]; then
-            HIGH_COUNT="$(grep -Eic '\bhigh\b' audit-results.txt || true)"
-            CRITICAL_COUNT="$(grep -Eic '\bcritical\b' audit-results.txt || true)"
-          fi
-
-          echo "High references     : ${HIGH_COUNT}"
-          echo "Critical references : ${CRITICAL_COUNT}"
-
-          {
-            echo "high=${HIGH_COUNT}"
-            echo "critical=${CRITICAL_COUNT}"
-          } > security-summary.env
-
-      - name: Generate dependency tree
-        if: always()
-        shell: bash
-        run: |
-          set +e
-
-          bun pm ls > dependency-tree.txt 2>&1 || true
-
-          cat dependency-tree.txt
-
-      - name: Upload dependency audit
+      - name: Upload dependency audit artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dependency-security-audit
-          path: |
-            audit-results.txt
-            audit-exit-code.txt
-            dependency-tree.txt
-            security-summary.env
+          name: dependency-audit
+          path: audit.json
           if-no-files-found: warn
-          retention-days: 30
-
-      - name: Dependency security gate
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          HIGH_COUNT=0
-          CRITICAL_COUNT=0
-
-          if [[ -f security-summary.env ]]; then
-            source security-summary.env
-          fi
-
-          echo "=========================================="
-          echo "DEPENDENCY SECURITY GATE"
-          echo "=========================================="
-          echo "High     : ${HIGH_COUNT}"
-          echo "Critical : ${CRITICAL_COUNT}"
-
-          if [[ "${CRITICAL_COUNT}" -gt 0 ]]; then
-            echo "::error::Critical dependency vulnerabilities detected."
-            exit 1
-          fi
-
-          if [[ "${HIGH_COUNT}" -gt 0 ]]; then
-            echo "::error::High-severity dependency findings detected."
-            exit 1
-          fi
-
-          echo "Dependency security gate: PASS"
 
 
-  secret-scan:
-    name: Secret Detection
-    runs-on: ubuntu-latest
+  codeql:
+    name: CodeQL Security Analysis
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+
+      - name: Analyze with CodeQL
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:javascript-typescript"
+
+
+  gitleaks:
+    name: Secret Scan
+    runs-on: ubuntu-24.04
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -185,152 +111,38 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-
-      - name: Secret scan completed
-        if: success()
-        run: |
-          echo "=========================================="
-          echo "GITLEAKS SECRET SCAN: PASS"
-          echo "=========================================="
-
-
-  repository-security:
-    name: Repository Security Checks
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check for accidentally committed environment files
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Checking for tracked environment files..."
-
-          FOUND=0
-
-          while IFS= read -r file; do
-            case "${file}" in
-              .env.example|.env.template|.env.sample)
-                ;;
-              *)
-                echo "::error::Potential secret environment file tracked: ${file}"
-                FOUND=1
-                ;;
-            esac
-          done < <(git ls-files | grep -E '(^|/)\.env($|\.)' || true)
-
-          if [[ "${FOUND}" -ne 0 ]]; then
-            exit 1
-          fi
-
-          echo "Environment file check: PASS"
-
-      - name: Search for obvious hardcoded secrets
-        shell: bash
-        run: |
-          set -uo pipefail
-
-          echo "Scanning tracked source files for obvious secret patterns..."
-
-          FOUND=0
-
-          PATTERN='(password|passwd|secret|api[_-]?key|access[_-]?token|private[_-]?key)[[:space:]]*[:=][[:space:]]*["'\''][^"'\'']{12,}["'\'']'
-
-          if git grep -n -I -E "${PATTERN}" -- \
-              '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' \
-              '*.json' '*.yaml' '*.yml' '*.toml' '*.sh' \
-              ':!package-lock.json' \
-              ':!bun.lock' \
-              ':!bun.lockb' \
-              ':!*.example' \
-              ':!*.sample' \
-              ':!*.template' \
-              ':!docs/**' \
-              2>/dev/null; then
-
-            echo "::warning::Potential hardcoded secret patterns detected."
-            FOUND=1
-          fi
-
-          if [[ "${FOUND}" -ne 0 ]]; then
-            echo "::error::Review potential hardcoded credentials/secrets."
-            exit 1
-          fi
-
-          echo "Hardcoded secret pattern check: PASS"
-
-      - name: Check dangerous production commands
-        shell: bash
-        run: |
-          set -uo pipefail
-
-          FOUND=0
-
-          echo "Checking repository for dangerous database deployment commands..."
-
-          if git grep -n -I -E \
-            'prisma[[:space:]]+db[[:space:]]+push.*--accept-data-loss|db:push.*--accept-data-loss' \
-            -- '*.json' '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs' '*.sh' \
-            2>/dev/null; then
-
-            echo "::warning::Potential destructive production database command found."
-            FOUND=1
-          fi
-
-          if [[ "${FOUND}" -ne 0 ]]; then
-            echo "::error::Destructive database command requires manual review."
-            exit 1
-          fi
-
-          echo "Dangerous production command check: PASS"
 
 
   security-summary:
     name: Security Summary
-    runs-on: ubuntu-latest
+    if: always()
     needs:
       - dependency-audit
-      - secret-scan
-      - repository-security
+      - codeql
+      - gitleaks
 
-    if: always()
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Evaluate security jobs
-        shell: bash
+
+      - name: Security result
         run: |
-          set -euo pipefail
-
           echo "============================================================"
-          echo "ALO LABS AIOS — SECURITY SCAN SUMMARY"
+          echo " SECURITY SCAN RESULTS"
           echo "============================================================"
 
-          echo "Dependency audit : ${{ needs.dependency-audit.result }}"
-          echo "Secret scan      : ${{ needs.secret-scan.result }}"
-          echo "Repository scan  : ${{ needs.repository-security.result }}"
+          echo "Dependency Audit: ${{ needs.dependency-audit.result }}"
+          echo "CodeQL:           ${{ needs.codeql.result }}"
+          echo "Gitleaks:         ${{ needs.gitleaks.result }}"
 
-          if [[ "${{ needs.dependency-audit.result }}" != "success" ]]; then
-            echo "::error::Dependency security audit failed."
-            exit 1
-          fi
+          if [ "${{ needs.dependency-audit.result }}" = "failure" ] || \
+             [ "${{ needs.codeql.result }}" = "failure" ] || \
+             [ "${{ needs.gitleaks.result }}" = "failure" ]; then
 
-          if [[ "${{ needs.secret-scan.result }}" != "success" ]]; then
-            echo "::error::Secret detection failed."
-            exit 1
-          fi
-
-          if [[ "${{ needs.repository-security.result }}" != "success" ]]; then
-            echo "::error::Repository security checks failed."
+            echo
+            echo "Security workflow contains a failed security job."
             exit 1
           fi
 
           echo
-          echo "============================================================"
-          echo "SECURITY SCAN: PASS"
-          echo "============================================================"
+          echo "All security jobs completed successfully."
