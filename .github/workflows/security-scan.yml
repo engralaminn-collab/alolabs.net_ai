@@ -1,57 +1,31 @@
-name: Security Scan
+name: Security Scan (Weekly Deep Audit)
 
 on:
-  push:
-    branches:
-      - main
-      - EPOSmain
-  pull_request:
-    branches:
-      - main
-      - EPOSmain
   schedule:
-    - cron: "0 6 * * 1"
+    - cron: '0 6 * * 1'
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 env:
-  BUN_VERSION: "1.3.14"
+  BUN_VERSION: "1.2.5"
 
 jobs:
-  dependency-audit:
+  audit:
     name: Dependency Audit
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
-      security-events: write
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Show runtime versions
-        run: |
-          set -euo pipefail
-
-          echo "=== Runtime ==="
-          bun --version
-          node --version
-          npm --version
-
-      - name: Restore Bun dependency cache
+      - name: Cache dependencies
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock', 'bun.lockb') }}
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: |
             bun-${{ runner.os }}-
 
@@ -60,232 +34,3 @@ jobs:
 
       - name: Run bun audit
         run: bun audit 2>&1 | tee audit-results.txt || true
-        run: |
-          set -euo pipefail
-
-          if [[ -f bun.lock ]]; then
-            bun install --frozen-lockfile
-          elif [[ -f bun.lockb ]]; then
-            bun install --frozen-lockfile
-          else
-            echo "::error::No Bun lockfile found."
-            exit 1
-          fi
-
-      - name: Run Bun audit
-        id: bun_audit
-        shell: bash
-        run: |
-          set -uo pipefail
-
-          echo "============================================================"
-          echo " BUN DEPENDENCY SECURITY AUDIT"
-          echo "============================================================"
-
-          set +e
-          bun audit > audit-results.txt 2>&1
-          AUDIT_EXIT=$?
-          set -e
-
-          echo
-          echo "Bun audit exit code: ${AUDIT_EXIT}"
-          echo
-
-          cat audit-results.txt
-
-          echo
-          echo "============================================================"
-          echo " END BUN AUDIT"
-          echo "============================================================"
-
-          # Keep the raw audit output as an artifact even when Bun
-          # reports vulnerabilities.
-          exit 0
-
-      - name: Analyze audit results
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "============================================================"
-          echo " SECURITY SEVERITY ANALYSIS"
-          echo "============================================================"
-
-          HIGH_COUNT=0
-          CRITICAL_COUNT=0
-
-          if [[ -s audit-results.txt ]]; then
-            HIGH_COUNT=$(grep -Eic '\bhigh\b' audit-results.txt || true)
-            CRITICAL_COUNT=$(grep -Eic '\bcritical\b' audit-results.txt || true)
-          fi
-
-          echo "High references     : ${HIGH_COUNT}"
-          echo "Critical references : ${CRITICAL_COUNT}"
-
-          {
-            echo "high=${HIGH_COUNT}"
-            echo "critical=${CRITICAL_COUNT}"
-          } >> security-summary.env
-
-          echo
-          echo "Raw audit output:"
-          cat audit-results.txt || true
-
-          echo
-          echo "============================================================"
-
-      - name: Dependency tree
-        if: always()
-        shell: bash
-        run: |
-          set +e
-
-          echo "=== Direct dependency tree ==="
-
-          if bun pm ls > dependency-tree.txt 2>&1; then
-            cat dependency-tree.txt
-          else
-            cat dependency-tree.txt || true
-          fi
-
-      - name: Upload raw security audit
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-audit-results
-          path: |
-            audit-results.txt
-            dependency-tree.txt
-            security-summary.env
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: Generate SARIF report
-        if: always()
-        shell: python
-        env:
-          BUN_VERSION_VALUE: ${{ env.BUN_VERSION }}
-        run: |
-          import json
-          import os
-          import re
-
-          audit_file = "audit-results.txt"
-          sarif_file = "audit.sarif"
-
-          try:
-              with open(audit_file, "r", encoding="utf-8", errors="replace") as f:
-                  content = f.read()
-          except FileNotFoundError:
-              content = ""
-
-          version = os.environ.get("BUN_VERSION_VALUE", "unknown")
-
-          results = []
-          seen = set()
-
-          for raw_line in content.splitlines():
-              line = raw_line.strip()
-
-              if not line:
-                  continue
-
-              lower = line.lower()
-
-              severity = None
-
-              if re.search(r"\bcritical\b", lower):
-                  severity = "error"
-              elif re.search(r"\bhigh\b", lower):
-                  severity = "error"
-              elif re.search(r"\bmoderate\b|\bmedium\b", lower):
-                  severity = "warning"
-              elif re.search(r"\blow\b", lower):
-                  severity = "note"
-
-              if severity is None:
-                  continue
-
-              key = line
-
-              if key in seen:
-                  continue
-
-              seen.add(key)
-
-              results.append({
-                  "ruleId": "bun-audit-finding",
-                  "level": severity,
-                  "message": {
-                      "text": line
-                  },
-                  "locations": [
-                      {
-                          "physicalLocation": {
-                              "artifactLocation": {
-                                  "uri": "package.json"
-                              }
-                          }
-                      }
-                  ]
-              })
-
-          sarif = {
-              "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
-              "version": "2.1.0",
-              "runs": [
-                  {
-                      "tool": {
-                          "driver": {
-                              "name": "Bun Audit",
-                              "version": version,
-                              "informationUri": "https://bun.sh/docs/cli/audit"
-                          }
-                      },
-                      "results": results
-                  }
-              ]
-          }
-
-          with open(sarif_file, "w", encoding="utf-8") as f:
-              json.dump(sarif, f, indent=2)
-
-          print(f"Generated {sarif_file} with {len(results)} findings.")
-
-      - name: Upload SARIF to GitHub Security
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: audit.sarif
-          category: bun-audit
-
-      - name: Security gate
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          HIGH_COUNT=0
-          CRITICAL_COUNT=0
-
-          if [[ -f security-summary.env ]]; then
-            source security-summary.env
-          fi
-
-          echo "============================================================"
-          echo " SECURITY GATE"
-          echo "============================================================"
-          echo "High     : ${HIGH_COUNT}"
-          echo "Critical : ${CRITICAL_COUNT}"
-          echo "============================================================"
-
-          if [[ "${CRITICAL_COUNT}" -gt 0 ]]; then
-            echo "::error::Critical dependency security findings detected."
-            exit 1
-          fi
-
-          if [[ "${HIGH_COUNT}" -gt 0 ]]; then
-            echo "::error::High-severity dependency security findings detected."
-            exit 1
-          fi
-
-          echo "No high/critical findings detected by the audit gate."

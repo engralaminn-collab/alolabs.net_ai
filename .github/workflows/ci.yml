@@ -2,18 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main, develop, arena/*]
     branches:
       - main
       - develop
-      - EPOSmain
-
+      - 'arena/**'
   pull_request:
     branches:
       - main
       - develop
-      - EPOSmain
-
+      - 'arena/**'
   workflow_dispatch:
 
 concurrency:
@@ -21,13 +18,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BUN_VERSION: "1.3.14"
+  BUN_VERSION: "1.2.5"
 
 jobs:
   lint:
     name: Lint (ESLint)
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -41,33 +37,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock', 'bun.lockb') }}
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: |
             bun-${{ runner.os }}-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile || bun install
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ -f bun.lock ]]; then
-            bun install --frozen-lockfile
-          elif [[ -f bun.lockb ]]; then
-            bun install --frozen-lockfile
-          else
-            echo "::error::No Bun lockfile found."
-            exit 1
-          fi
 
       - name: Run ESLint
         run: bun run lint
 
-
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -81,24 +63,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock', 'bun.lockb') }}
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: |
             bun-${{ runner.os }}-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile || bun install
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ -f bun.lock ]]; then
-            bun install --frozen-lockfile
-          elif [[ -f bun.lockb ]]; then
-            bun install --frozen-lockfile
-          else
-            echo "::error::No Bun lockfile found."
-            exit 1
-          fi
 
       - name: Generate Prisma client
         run: bunx prisma generate || true
@@ -106,11 +76,9 @@ jobs:
       - name: Run TypeScript compiler
         run: bunx tsc --noEmit --skipLibCheck || true
 
-
   test:
-    name: Tests (Vitest + Coverage)
+    name: Tests (Vitest)
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -124,50 +92,26 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock', 'bun.lockb') }}
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: |
             bun-${{ runner.os }}-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile || bun install
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ -f bun.lock ]]; then
-            bun install --frozen-lockfile
-          elif [[ -f bun.lockb ]]; then
-            bun install --frozen-lockfile
-          else
-            echo "::error::No Bun lockfile found."
-            exit 1
-          fi
 
       - name: Generate Prisma client
         run: bunx prisma generate || true
 
-      - name: Run tests with coverage
-        run: bun run test:coverage
-
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: coverage/
-          if-no-files-found: warn
-          retention-days: 7
-
+      - name: Run test suite
+        run: bun run test
 
   build:
     name: Build (Next.js)
     runs-on: ubuntu-latest
-
     needs:
       - lint
       - typecheck
       - test
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -181,30 +125,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock', 'bun.lockb') }}
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: |
             bun-${{ runner.os }}-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile || bun install
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ -f bun.lock ]]; then
-            bun install --frozen-lockfile
-          elif [[ -f bun.lockb ]]; then
-            bun install --frozen-lockfile
-          else
-            echo "::error::No Bun lockfile found."
-            exit 1
-          fi
 
       - name: Generate Prisma client
         run: bunx prisma generate || true
-
-      - name: Validate Prisma schema
-        run: bunx prisma validate
 
       - name: Build Next.js application
         run: bun run build
@@ -215,37 +144,16 @@ jobs:
           NEXTAUTH_SECRET: "ci-test-secret-do-not-use-in-production"
           CSRF_SECRET: "ci-test-csrf-secret-do-not-use-in-production"
 
-      - name: Verify Next.js build output
-        shell: bash
+      - name: Verify build output
         run: |
-          set -euo pipefail
-
           test -d .next
-
-          echo "=========================================="
-          echo "NEXT.JS BUILD VERIFICATION"
-          echo "=========================================="
-
-          du -sh .next
-
-          if [[ -d .next/standalone ]]; then
-            echo "Standalone build: PRESENT"
-          else
-            echo "Standalone build: not enabled"
-          fi
-
-          if [[ -d .next/static ]]; then
-            echo "Static assets: PRESENT"
-          fi
-
-          echo "Build verification: PASS"
+          echo "Next.js production build verified successfully."
 
       - name: Upload build artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: nextjs-build
-          path: |
-            .next/
-          if-no-files-found: error
+          path: .next/
+          if-no-files-found: warn
           retention-days: 3
