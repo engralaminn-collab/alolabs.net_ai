@@ -28,7 +28,8 @@
     "verify:workforce": "npx tsx scripts/verify-2000-workforce.ts",
     "verify:mysql": "npx tsx scripts/verify-mysql-compatibility.ts",
     "seed:enterprise": "npx tsx scripts/seed-enterprise-v3.ts",
-    "seed:departments": "npx tsx scripts/seed-100-departments.ts"
+    "seed:departments": "npx tsx scripts/seed-100-departments.ts",
+    "check:prisma-delegates": "tsx scripts/check-prisma-delegates.ts"
   },
   "dependencies": {
     "@prisma/client": "6.19.2",
