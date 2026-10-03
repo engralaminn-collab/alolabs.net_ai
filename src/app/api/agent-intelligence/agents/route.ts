@@ -23,9 +23,7 @@ export async function GET(req: NextRequest) {
     }
 
     const orderBy: Record<string, string> = {};
-    if (sortBy === 'maturity') orderBy.id = 'asc';
-    if (sortBy === 'name') orderBy.name = 'asc';
-    if (sortBy === 'knowledge') orderBy.id = 'asc';
+    orderBy[sortBy === 'name' ? 'name' : 'id'] = 'asc';
 
     const [agents, total] = await Promise.all([
       db.agent.findMany({
@@ -34,55 +32,35 @@ export async function GET(req: NextRequest) {
         skip: (page - 1) * limit,
         take: limit,
         include: {
-          evolution: {
-            select: {
-              level: true,
-              levelName: true,
-              maturityScore: true,
-              modelReadiness: true,
-              totalKnowledge: true,
-              evolutionPath: true,
-            },
-          },
-          protectiveMode: {
-            select: { enabled: true, safetyLevel: true },
-          },
-          _count: { select: { knowledge: true, learningSessions: true } },
+          _count: { select: { memory: true, tasks: true } },
         },
       }),
       db.agent.count({ where }),
     ]);
 
     return NextResponse.json({
-      data: agents.map((a) => ({
-        id: a.id,
-        agentId: a.agentId,
-        name: a.name,
-        slug: a.slug,
-        type: a.type,
-        role: a.role,
-        purpose: a.purpose,
-        departmentId: a.departmentId,
-        departmentName: a.departmentName,
-        evolution: a.evolution,
-        protectiveMode: a.protectiveMode,
-        knowledgeCount: a._count.knowledge,
-        sessionCount: a._count.learningSessions,
+      data: agents.map((agent) => ({
+        id: agent.id,
+        agentId: agent.agentId,
+        name: agent.name,
+        slug: agent.slug,
+        type: agent.type,
+        role: agent.role,
+        purpose: agent.purpose,
+        departmentId: agent.departmentId,
+        departmentName: agent.departmentName,
+        // Evolution/protective records are not part of the deployed Prisma schema.
+        evolution: null,
+        protectiveMode: null,
+        knowledgeCount: agent._count.memory,
+        sessionCount: agent._count.tasks,
       })),
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit),
-      },
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) },
     });
   } catch (error: unknown) {
-    if (error instanceof Error && error.message?.includes('Unauthorized')) {
+    if (error instanceof Error && error.message.includes('Unauthorized')) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
