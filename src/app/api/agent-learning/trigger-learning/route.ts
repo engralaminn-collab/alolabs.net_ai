@@ -4,8 +4,7 @@ import { LearningEngine } from '@/lib/agent-learning';
 import { db } from '@/lib/db';
 
 export async function POST(req: Request) {
-  const auth = await requireAuth();
-  if (auth.error) return auth.error;
+  await requireAuth();
 
   const body = await req.json();
   const { agentId, triggerType, triggerDetail, taskOutput, taskInput, wasSuccess, error, corrections, insights } = body;
@@ -39,8 +38,7 @@ export async function POST(req: Request) {
  * Trigger learning for multiple agents at once (e.g., department-wide training)
  */
 export async function PUT(req: Request) {
-  const auth = await requireAuth();
-  if (auth.error) return auth.error;
+  await requireAuth();
 
   const body = await req.json();
   const { agentIds, triggerType, insights } = body;

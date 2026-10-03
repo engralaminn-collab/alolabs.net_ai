@@ -3,8 +3,7 @@ import { requireAuth } from '@/lib/api-auth';
 import { db } from '@/lib/db';
 
 export async function GET(req: NextRequest) {
-  const auth = await requireAuth();
-  if (auth.error) return auth.error;
+  await requireAuth();
 
   const { searchParams } = new URL(req.url);
   const agentId = searchParams.get('agentId');
@@ -68,8 +67,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function PUT(req: NextRequest) {
-  const auth = await requireAuth();
-  if (auth.error) return auth.error;
+  await requireAuth();
 
   const body = await req.json();
   const { agentId, enabled, safetyLevel, blockedPatterns, allowedDomains, maxKnowledgePerDay, maxConfidence, requireVerification, autoFilterToxic, learningScope, dataRetentionDays } = body;
