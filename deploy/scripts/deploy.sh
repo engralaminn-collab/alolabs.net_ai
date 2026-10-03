@@ -5,6 +5,7 @@ APP_DIR="${APP_DIR:-/opt}"
 BRANCH="${BRANCH:-main}"
 PM2_NAME="agentos-app"
 PORT=3011
+REQUIRED_BUN_VERSION="1.3.4"
 SAFETY_SCRIPT_DIR="${SAFETY_SCRIPT_DIR:-${APP_DIR}/deploy/scripts}"
 cd "${APP_DIR}"
 
@@ -45,7 +46,9 @@ grep -nE '^[A-Za-z_][A-Za-z0-9_]*(DATABASE|MYSQL|MARIADB|SQLITE)[A-Za-z0-9_]*=' 
 grep -RniE 'DATABASE_URL|DATABASE_PROVIDER|sqlite|mysql|mariadb|postgres' prisma package.json 2>/dev/null || true
 printf '%s\n' "=== SERVER AND RUNTIME VERSIONS ==="
 uname -a
-/usr/local/bin/bun --version
+BUN_VERSION="$(/usr/local/bin/bun --version)"
+[[ "${BUN_VERSION}" == "${REQUIRED_BUN_VERSION}" ]] || fail "production Bun ${BUN_VERSION} does not match required ${REQUIRED_BUN_VERSION}"
+echo "Bun ${BUN_VERSION}"
 pm2 --version
 node -p 'require("next/package.json").version'
 node -p 'require("prisma/package.json").version'
