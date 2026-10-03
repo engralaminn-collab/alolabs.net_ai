@@ -1,20 +1,32 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { db } from '@/lib/db'
+import { NextRequest, NextResponse } from 'next/server';
+import { requireAuth } from '@/lib/api-auth';
+import { db } from '@/lib/db';
+
 export async function GET(req: NextRequest) {
   try {
-    const s = req.nextUrl.searchParams
-    const where: any = {}
-    if (s.get('type')) where.type = s.get('type')
-    if (s.get('severity')) where.severity = s.get('severity')
-    if (s.get('agentId')) where.agentId = s.get('agentId')
-    const data = await db.aiSecurityEvent.findMany({ where, orderBy: { createdAt: 'desc' }, take: 100 })
-    return NextResponse.json({ data, success: true })
-  } catch (e: any) { return NextResponse.json({ error: e.message, success: false }, { status: 500 }) }
+    await requireAuth();
+    const params = req.nextUrl.searchParams;
+    const where: { type?: string; severity?: string; agentId?: string } = {};
+    if (params.get('type')) where.type = params.get('type')!;
+    if (params.get('severity')) where.severity = params.get('severity')!;
+    if (params.get('agentId')) where.agentId = params.get('agentId')!;
+    return NextResponse.json({ data: await db.securityEvent.findMany({ where, orderBy: { createdAt: 'desc' }, take: 100 }), success: true });
+  } catch (error: unknown) {
+    if (error instanceof Error && error.message.includes('Unauthorized')) return NextResponse.json({ error: 'Unauthorized', success: false }, { status: 401 });
+    return NextResponse.json({ error: 'Internal server error', success: false }, { status: 500 });
+  }
 }
+
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
-    const data = await db.aiSecurityEvent.create({ data: { type: body.type, severity: body.severity || 'medium', executionId: body.executionId, agentId: body.agentId, userId: body.userId, companyId: body.companyId, input: body.input, output: body.output, riskScore: body.riskScore || 0, action: body.action || 'flagged', details: JSON.stringify(body.details || {}) } })
-    return NextResponse.json({ data, success: true })
-  } catch (e: any) { return NextResponse.json({ error: e.message, success: false }, { status: 500 }) }
+    await requireAuth();
+    const body = await req.json();
+    if (!body.type) return NextResponse.json({ error: 'type required', success: false }, { status: 400 });
+    const details = JSON.stringify({ executionId: body.executionId, userId: body.userId, input: body.input, output: body.output, riskScore: body.riskScore ?? 0, action: body.action ?? 'flagged', details: body.details ?? {} });
+    const data = await db.securityEvent.create({ data: { type: body.type, severity: body.severity || 'medium', agentId: body.agentId, companyId: body.companyId, source: 'ai-security', details } });
+    return NextResponse.json({ data, success: true });
+  } catch (error: unknown) {
+    if (error instanceof Error && error.message.includes('Unauthorized')) return NextResponse.json({ error: 'Unauthorized', success: false }, { status: 401 });
+    return NextResponse.json({ error: 'Internal server error', success: false }, { status: 500 });
+  }
 }
