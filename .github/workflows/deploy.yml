@@ -39,6 +39,8 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Generate CI Prisma client
         run: bun run db:generate
+      - name: Prisma delegate/schema reconciliation
+        run: bun run check:prisma-delegates
       - name: TypeScript hard gate
         shell: bash
         run: |
