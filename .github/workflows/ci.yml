@@ -46,6 +46,12 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if (( status != 0 )); then
+            {
+              echo '## TypeScript diagnostics'
+              echo '```text'
+              cat /tmp/typescript-errors.txt
+              echo '```'
+            } >> "${GITHUB_STEP_SUMMARY}"
             while IFS= read -r diagnostic; do
               diagnostic="${diagnostic//'%'/'%25'}"
               diagnostic="${diagnostic//$'\r'/'%0D'}"
