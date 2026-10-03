@@ -1,7 +1,7 @@
 {
   "name": "alolabs-agentos",
   "version": "1.0.0",
-  "description": "ALO Labs AgentOS / AI-EOS — Enterprise Artificial Intelligence Operating System",
+  "description": "ALO Labs AgentOS / AI-EOS \u2014 Enterprise Artificial Intelligence Operating System",
   "private": true,
   "engines": {
     "node": ">=20.0.0",
@@ -13,6 +13,7 @@
     "start": "PORT=3011 NODE_ENV=production node .next/standalone/server.js 2>&1 | tee server.log",
     "start:bun": "PORT=3011 NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -24,7 +25,6 @@
     "db:generate:schema": "npx tsx scripts/generate-mysql-schema.ts",
     "db:migrate:mysql": "npx tsx scripts/migrate-sqlite-to-mysql.ts",
     "db:migrate": "prisma migrate dev",
-    "db:reset": "prisma migrate reset",
     "verify:workforce": "npx tsx scripts/verify-2000-workforce.ts",
     "verify:mysql": "npx tsx scripts/verify-mysql-compatibility.ts",
     "seed:enterprise": "npx tsx scripts/seed-enterprise-v3.ts",
