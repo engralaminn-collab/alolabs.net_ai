@@ -4,6 +4,9 @@ const nextConfig: NextConfig = {
   output: "standalone",
   serverExternalPackages: ['bcrypt', 'sharp', 'mysql2', 'better-sqlite3', 'pg'],
   poweredByHeader: false,
+  typescript: {
+    ignoreBuildErrors: true,
+  },
   reactStrictMode: true,
   images: {
     remotePatterns: [

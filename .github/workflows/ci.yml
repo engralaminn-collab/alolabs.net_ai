@@ -39,7 +39,21 @@ jobs:
       - name: Generate test Prisma client
         run: bun run db:generate
       - name: TypeScript hard gate
-        run: ./node_modules/.bin/tsc --noEmit
+        shell: bash
+        run: |
+          set +e
+          ./node_modules/.bin/tsc --noEmit --pretty false 2>&1 | tee /tmp/typescript-errors.txt
+          status=${PIPESTATUS[0]}
+          set -e
+          if (( status != 0 )); then
+            while IFS= read -r diagnostic; do
+              diagnostic="${diagnostic//'%'/'%25'}"
+              diagnostic="${diagnostic//$'\r'/'%0D'}"
+              diagnostic="${diagnostic//$'\n'/'%0A'}"
+              echo "::error title=TypeScript diagnostic::${diagnostic}"
+            done < /tmp/typescript-errors.txt
+            exit "${status}"
+          fi
       - name: Complete test suite
         run: bun run test
         env:
