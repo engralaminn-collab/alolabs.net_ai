@@ -1,7 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
-  <rect width="192" height="192" rx="40" fill="#003ABC"/>
-  <polygon points="96,24 164,63 164,141 96,180 28,141 28,63" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="3"/>
-  <polygon points="96,38 150,70 150,134 96,166 42,134 42,70" fill="rgba(255,255,255,0.08)"/>
-  <text x="96" y="118" text-anchor="middle" font-family="Inter,system-ui,-apple-system,sans-serif" font-weight="700" font-size="80" fill="#FFFFFF" letter-spacing="-2">A</text>
-  <rect x="56" y="138" width="80" height="5" rx="2.5" fill="#FF6A00"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="ALO Labs AgentOS app icon">
+  <title>ALO Labs AgentOS app icon</title>
+  <defs>
+    <linearGradient id="icoLegL" x1="0.1" y1="0.1" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#0077FF"/><stop offset="1" stop-color="#0047A1"/>
+    </linearGradient>
+    <linearGradient id="icoLegR" x1="0.9" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#003ABC"/><stop offset="1" stop-color="#001C6B"/>
+    </linearGradient>
+    <linearGradient id="icoFold" x1="0" y1="1" x2="1" y2="0.1">
+      <stop offset="0" stop-color="#0053C8"/><stop offset="1" stop-color="#0077FF"/>
+    </linearGradient>
+    <linearGradient id="icoBar" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FF8A2B"/><stop offset="1" stop-color="#FF6A00"/>
+    </linearGradient>
+  </defs>
+  <rect width="240" height="240" rx="52" fill="#FFFFFF"/>
+  <path d="M120 30 L202 77 L202 163 L120 210 L38 163 L38 77 Z"
+        fill="none" stroke="#FF6A00" stroke-width="15" stroke-linejoin="round"/>
+  <path d="M120 62 L74 180 L104 180 L132 90 Z" fill="url(#icoLegL)"/>
+  <path d="M120 62 L166 180 L136 180 L108 90 Z" fill="url(#icoLegR)"/>
+  <path d="M68 148 L152 122 L152 150 L98 174 Z" fill="url(#icoFold)"/>
+  <path d="M68 148 L152 150 L98 174 Z" fill="#001C6B" opacity="0.28"/>
+  <g transform="rotate(-9 128 170)">
+    <rect x="104" y="158" width="50" height="25" rx="12.5" fill="url(#icoBar)"/>
+  </g>
 </svg>

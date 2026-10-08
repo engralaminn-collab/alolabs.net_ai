@@ -6,7 +6,8 @@ import {
   LayoutDashboard, Building2, Bot, Scale, ClipboardList, Landmark, ShieldCheck, FileText,
   Network, Database, FileCode, Wrench, Brain, Map, RotateCcw, Heart, TrendingUp,
   BarChart3, Users, GitBranch, Zap, Globe, Server, HardDrive, Eye, Shield, Lock,
-  Menu, ChevronLeft, ChevronRight, Sun, Moon, Activity, Rocket, Calendar
+  Menu, ChevronLeft, ChevronRight, Sun, Moon, Activity, Rocket, Calendar,
+  Megaphone, PenTool, Palette, Receipt, Globe2
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -14,6 +15,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Separator } from '@/components/ui/separator'
+import { AloLabsLogo, Mark } from '@/components/brand/alo-logo'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export type EnterpriseView =
@@ -48,6 +50,11 @@ export type EnterpriseView =
   | 'strategic-command'
   | 'master-roadmap'
   | 'system-architecture'
+  | 'marketing-kit'
+  | 'diagram-studio'
+  | 'brand-book'
+  | 'invoice'
+  | 'public-site'
 
 interface NavItem {
   id: EnterpriseView
@@ -155,6 +162,16 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
+    label: 'Marketing & Design',
+    items: [
+      { id: 'marketing-kit', name: 'Marketing Kit', icon: Megaphone },
+      { id: 'diagram-studio', name: 'Diagram Studio', icon: PenTool },
+      { id: 'brand-book', name: 'Brand Book', icon: Palette },
+      { id: 'invoice', name: 'Invoice', icon: Receipt },
+      { id: 'public-site', name: 'Public Site', icon: Globe2 },
+    ],
+  },
+  {
     label: 'Identity',
     items: [
       { id: 'enterprise-rbac', name: 'Enterprise RBAC', icon: Lock },
@@ -195,6 +212,11 @@ const panelMap: Record<EnterpriseView, React.LazyExoticComponent<React.Component
   'strategic-command': lazy(() => import('./panels/strategic-command')),
   'master-roadmap': lazy(() => import('./panels/master-roadmap')),
   'system-architecture': lazy(() => import('./panels/system-architecture')),
+  'marketing-kit': lazy(() => import('@/components/panels/marketing-kit-panel')),
+  'diagram-studio': lazy(() => import('@/components/diagrams/diagram-studio-panel')),
+  'brand-book': lazy(() => import('@/components/brand/brand-book-panel')),
+  invoice: lazy(() => import('@/components/brand/invoice-panel')),
+  'public-site': lazy(() => import('@/components/brand/public-site-panel')),
 }
 
 // ─── Sidebar Content ───────────────────────────────────────────────────────────
@@ -308,14 +330,12 @@ export default function EnterpriseShell() {
         >
           {/* Logo area */}
           <div className={`flex items-center gap-3 border-b px-4 h-14 shrink-0 ${isDark ? 'border-slate-700/50' : 'border-slate-200'}`}>
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#003ABC]">
-              <span className="text-white font-bold text-sm">A</span>
-            </div>
-            {sidebarOpen && (
-              <div className="flex flex-col">
-                <span className="text-sm font-bold text-slate-900 dark:text-white leading-tight">ALO Labs AgentOS</span>
-                <span className="text-[10px] text-slate-500 dark:text-slate-400">Enterprise Platform</span>
-              </div>
+            {sidebarOpen ? (
+              <AloLabsLogo size={30} />
+            ) : (
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center">
+                <Mark size={30} />
+              </span>
             )}
           </div>
 
@@ -370,10 +390,7 @@ export default function EnterpriseShell() {
 
               {/* Mobile logo */}
               <div className="flex items-center gap-3 lg:hidden">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#003ABC]">
-                  <span className="text-white font-bold text-sm">A</span>
-                </div>
-                <span className="text-sm font-bold">AgentOS</span>
+                <AloLabsLogo size={30} tagline={false} />
               </div>
 
               {/* Breadcrumb */}

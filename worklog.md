@@ -1841,3 +1841,82 @@ Stage Summary:
 - 3 new supporting files created (prometheus.yml, grafana datasources, grafana dashboards)
 - All scripts made executable
 - No real secrets in .env.example
+
+---
+
+Task ID: 10
+Agent: Design Systems Port (this session)
+Task: Port the editorial diagram design system, the button language and the marketing kits; implement every missing element from the user's link inventory
+
+Work Log:
+- Built the full diagram library: tokens (44 kinds, role skins, 4px grid, type ramp), geometry (metrics, ports, elbow routing, label placement with node-avoidance), scene model + builder, six engines (graph/stack/cartesian/radial/sequence/schema/special), dispatcher, SVG/HTML exporters
+- Wrote the taste gate as code (audit.ts): §6.1 orthogonal connectors (arc-aware), §6.2 label masks, §6.3 stacked connectors, §6.6 mask-vs-node rule 6, §7 per-type complexity budgets + universal 9/12/2/2, §9 4px grid, legend coverage, typography registers, §12 accessible-SVG contract
+- Made label placement collision-aware (flips side of the stroke when a node rect is in the way); node backing masks excluded from the §6.6 check; legends auto-emitted when more than one treatment is in use (graph, stack, tree and band families)
+- Added one production-quality example per visual type (44 specs, AgentOS-flavoured) as the regression corpus; diffed the type list against upstream — 44/44, name-for-name
+- Ported the buttons: five editorial variants (editorial, outline, accent, ghost, technical) and four sizes in ui/button.tsx; product variants untouched
+- Imported the marketing kits: all 50 skills + reference documents, catalog/search/stats API, per-skill detail + install endpoints, markdown renderer, browse/search/install panel
+- Wired the surfaces: /design reference page (diagrams + buttons + cards + tokens), Diagram Studio panel and Marketing Kit panel in the enterprise shell
+- Added the regression suite: 61 tests covering catalogue integrity, per-type rendering, taste gate (no fails, no warns across all 44), grid, variants, exports and marketing-kit provenance
+
+Stage Summary:
+- 44/44 visual types implemented and verified against the upstream reference (0 fail, 0 warn findings)
+- 50/50 marketing skills imported and verified
+- 61 new tests passing; scoped typecheck clean; dev server serves /design and / with no errors
+- Fixed the dev-preview path: allowedDevOrigins now covers the sandbox host, X-Frame-Options/CSP frame-ancestors relaxed in development only, Google-Fonts stylesheet allowed by CSP
+- Link coverage report: docs/LINK-COVERAGE-REPORT.md
+
+---
+
+Task ID: 11
+Agent: Brand System Port (this session)
+Task: Implement the uploaded brand collateral — logo, colour system, typography, letterhead, invoice and the shared designs
+
+Work Log:
+- Built the brand token module (src/lib/brand/tokens.ts): palette with both blues and all gradient stops, usage guide, eight usage rules, Inter/Poppins registers, corporate contact block, four domains, headline statistics, the orange-and-blue system flow, the twelve mobile command-centre tiles, A4 letterhead geometry
+- Recreated the official logo as vector: mark, app icon, wordmark, horizontal and stacked lockups (public/brand/*.svg) plus the AloLabsLogo/Mark React components; replaced the placeholder favicon and PWA icons
+- Built the letterhead pad: A4 at 794x1123, orange outer rule, blue top/bottom bands with their diagonal cuts, masthead lockup, four-item contact strip
+- Built the invoice on that pad with real arithmetic (subtotal → contribution → tax → balance) and the house no-fee policy: zero balance, cost avoided as the headline; printable to true A4 with the chrome suppressed
+- Rebuilt the shared designs as live components: the orange-and-blue system flow, the blue-theme mobile command centre, and the AGENT-0801 agent specification cards
+- Published the guideline sheet as a living /brand page (logo, colour with computed contrast pairs, typography, system flow, documents, misuse) and wired /brand and /invoice into the enterprise shell; the shell sidebar and mobile header now carry the official lockup
+- Added 45 brand tests: palette and gradient stops, typography loading, the exact corporate contact block, the flow order and tones, asset well-formedness and on-brand hues, A4 geometry, print rules, and the invoice arithmetic including rounding and the no-fee policy
+
+Stage Summary:
+- Brand system implemented from the uploaded collateral; 45 new tests passing (602 in the suite)
+- Letterhead + invoice workflow live at /invoice and in the shell, printing to true A4
+- Brand book live at /brand and in the shell, generated entirely from tokens
+- Addendum added to docs/LINK-COVERAGE-REPORT.md
+
+---
+
+Task ID: 12
+Agent: Website & Document Delivery (this session)
+Task: Put the shared designs on the public website and make the letterhead invoice deliverable
+
+Work Log:
+- Built the public marketing site at /site from the shared designs: hero with the headline statistics and a live command-centre panel, the orange-and-blue system flow with routed-hop stats, the agent specification cards, the blue-theme mobile command centre with its feature set, the five departments and four domains, the letterhead contact strip as page cards, and a dark-ground footer
+- Added the Public Site panel so the website can be reviewed inside the enterprise shell, and cross-linked the site from the brand book
+- Rendered the letterhead as portable HTML (src/lib/brand/invoice-html.ts): tables and inline styles only, inline SVG mark, A4 print rules, HTML-escaped content, subject and plain-text alternatives
+- Added two ways to deliver the pad: Download as HTML on /invoice and Send by email in the Invoice panel, using the platform's own mail accounts (/api/email/accounts + /api/email/send) rather than a third party, with recipient validation and a clear message when no account is configured
+- Extended the brand suite to 62 tests covering the portable pad and the website composition
+
+Stage Summary:
+- Website live at /site using the system flow, agent cards, mobile view, statistics and contact strip
+- Invoice deliverable three ways: print to A4, download as a self-contained HTML pad, or email it through the deployment's own mail accounts
+- 619 tests passing; 444 pre-existing type errors unchanged, none in brand files
+
+---
+
+Task ID: 13
+Agent: Badge & Divider (this session)
+Task: Implement the circular badge emblem and the rule-with-dot divider from the uploaded logo artwork
+
+Work Log:
+- Recreated the circular badge as a vector seal (public/brand/alo-badge.svg): circuit-trace background, orange and blue rim swooshes, the tapered bottom crescent, the mark, the stacked wordmark and the hairline rule with the orange dot
+- Added matching React lockups — Badge and BrandRule — and a 'badge' variant to AloLabsLogo, all driven by the brand tokens
+- Added the rule-and-dot divider to the stacked lockup SVG, matching the supplied artwork
+- Put the badge to work: the seal on the website hero (/site), a downloadable asset card on /brand, listed among the official lockups
+- Extended the brand suite to 68 tests covering the badge construction, the divider geometry and both uses
+
+Stage Summary:
+- Circular badge and rule-with-dot divider implemented as vector assets and React components; used on the website and the brand book
+- 68 brand tests passing
