@@ -53,10 +53,10 @@ export interface OrchestratedTask {
 
 export interface OrchestratorResult {
   content: string;
-  confidence: number;
+  confidence?: number;
   model: string;
   latencyMs: number;
-  contextTokens: number;
+  contextTokens?: number;
   contextSources: string;
   routing: {
     task: string;
@@ -99,7 +99,8 @@ export interface AgentContribution {
   departmentName: string;
   subTask: string;
   result: string;
-  confidence: number;
+  confidence?: number;
+  routingScore?: number;
   latencyMs: number;
   status: 'fulfilled' | 'rejected';
   error?: string;
@@ -113,7 +114,7 @@ export interface CollaborationResult {
   totalLatencyMs: number;
   departmentsInvolved: string[];
   synthesisModel: string;
-  synthesisConfidence: number;
+  synthesisConfidence?: number;
 }
 
 // ─── Orchestrator Event Types ──────────────────────────────────────────
@@ -262,7 +263,7 @@ export class UnifiedOrchestrator {
    * - Workload/Performance-Aware scoring (health + recent run counts)
    * - Hierarchy-Aware role matching (10% bonus for role-tier alignment)
    */
-  async routeTask(task: string): Promise<OrchestratedTask> {
+  async routeTask(task: string, companyId: string): Promise<OrchestratedTask> {
     const routeStart = Date.now();
     const taskKeywords = extractKeywords(task);
 
@@ -274,7 +275,7 @@ export class UnifiedOrchestrator {
 
     // Step 1: Find candidate agents from DB
     const agents = await db.agent.findMany({
-      where: { status: 'active' },
+      where: { status: 'active', agentCompanyAccess: { some: { companyId } } },
       select: {
         agentId: true,
         name: true,
@@ -292,7 +293,7 @@ export class UnifiedOrchestrator {
 
     // Step 3: Apply Workload/Performance-Aware adjustments
     const healthMonitor = getAgentHealthMonitor();
-    const recentRunsMap = await this.getRecentRunCounts();
+    const recentRunsMap = await this.getRecentRunCounts(companyId);
 
     for (const candidate of candidates) {
       const health = healthMonitor.getHealth(candidate.agentId);
@@ -377,11 +378,23 @@ export class UnifiedOrchestrator {
   async execute(params: {
     task: string;
     userId: string;
-    companyId?: string;
+    companyId: string;
     conversationId?: string;
     preferredAgentId?: string;
   }): Promise<OrchestratorResult> {
-    const companyId = params.companyId || 'default-company';
+    const companyId = params.companyId
+    const membership = await db.companyUser.findUnique({
+      where: { companyId_userId: { companyId, userId: params.userId } },
+      select: { id: true },
+    })
+    if (!membership) throw new Error('Forbidden')
+    if (params.conversationId) {
+      const conversation = await db.conversation.findFirst({
+        where: { id: params.conversationId, companyId, userId: params.userId },
+        select: { id: true },
+      })
+      if (!conversation) throw new Error('Conversation not found')
+    }
     const taskId = `orch_exec_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     // Step 1: Route the task
@@ -392,14 +405,18 @@ export class UnifiedOrchestrator {
 
     if (params.preferredAgentId) {
       // User specifically selected an agent — use it directly
-      const agent = await db.agent.findUnique({
-        where: { agentId: params.preferredAgentId },
+      const agent = await db.agent.findFirst({
+        where: {
+          agentId: params.preferredAgentId,
+          status: 'active',
+          agentCompanyAccess: { some: { companyId } },
+        },
         select: {
           agentId: true, name: true, role: true, type: true,
           departmentName: true, departmentId: true, purpose: true, allowedSkills: true,
         },
       });
-      if (!agent) throw new Error(`Agent ${params.preferredAgentId} not found`);
+      if (!agent) throw new Error(`Agent ${params.preferredAgentId} not found for this company`);
       agentId = agent.agentId;
       agentName = agent.name;
       orchestrated = {
@@ -407,6 +424,7 @@ export class UnifiedOrchestrator {
         task: params.task,
         selectedAgent: {
           ...agent,
+          agentName: agent.name,
           score: 1.0,
           matchDetails: { department: 0, purpose: 0, skills: 0, role: 0 },
         },
@@ -414,7 +432,7 @@ export class UnifiedOrchestrator {
         reasoning: `User selected ${agent.name} directly.`,
       };
     } else {
-      orchestrated = await this.routeTask(params.task);
+      orchestrated = await this.routeTask(params.task, companyId);
       agentId = orchestrated.selectedAgent.agentId;
       agentName = orchestrated.selectedAgent.agentName;
     }
@@ -511,8 +529,8 @@ export class UnifiedOrchestrator {
       const result = taskResult.result;
       const metadata = result.metadata as Record<string, unknown> | undefined;
       const model = (metadata?.model as string) || 'unknown';
-      const contextTokens = (metadata?.contextTokens as number) || 0;
-      const contextSources = (metadata?.contextSources as string) || '';
+      const contextTokens = typeof metadata?.estimatedContextTokens === 'number' ? metadata.estimatedContextTokens : undefined;
+      const contextSources = typeof metadata?.contextSources === 'string' ? metadata.contextSources : '';
       const latencyMs = Date.now() - execStart;
 
       // Step 5: Store agent response in conversation
@@ -526,7 +544,7 @@ export class UnifiedOrchestrator {
           model,
           tokensUsed: taskResult.tokenUsage?.totalTokens || 0,
           latencyMs,
-          confidence: result.confidence,
+          ...(typeof result.confidence === 'number' ? { confidence: result.confidence } : {}),
           metadata: JSON.stringify({
             routingScore: orchestrated.selectedAgent.score,
             routingReasoning: orchestrated.reasoning,
@@ -550,7 +568,7 @@ export class UnifiedOrchestrator {
           agentId: orchestrated.selectedAgent.agentId,
           companyId,
           userId: params.userId,
-          content: `Executed task: "${params.task.slice(0, 200)}" → ${result.confidence > 0.8 ? 'high confidence' : 'moderate confidence'} response (${latencyMs}ms)`,
+          content: `Executed task: "${params.task.slice(0, 200)}" using ${model} (${latencyMs}ms)`,
           metadata: { model, tokens: taskResult.tokenUsage?.totalTokens, conversationId },
         });
         // Also persist to DB AgentMemory (FK to Agent.id, not Agent.agentId)
@@ -563,10 +581,12 @@ export class UnifiedOrchestrator {
             data: {
               agentId: agentDbRecord.id,
               category: 'pattern',
-              content: `Handled: ${params.task.slice(0, 150)} [${model}, ${(result.confidence * 100).toFixed(0)}% conf, ${latencyMs}ms]`,
-              temperature: 'warm',
-              successCount: result.confidence > 0.8 ? 1 : 0,
-              useCount: 1,
+              content: `Handled: ${params.task.slice(0, 150)} [${model}, ${latencyMs}ms]`,
+              temperature: 'hot',
+              confidence: 0,
+              isVerified: false,
+              successCount: 0,
+              useCount: 0,
             },
           });
         }
@@ -600,7 +620,7 @@ export class UnifiedOrchestrator {
             task: params.task,
             model,
             latencyMs,
-            confidence: result.confidence,
+            ...(typeof result.confidence === 'number' ? { confidence: result.confidence } : {}),
             contextSources,
           },
           priority: 'normal',
@@ -613,10 +633,10 @@ export class UnifiedOrchestrator {
 
       return {
         content: result.content,
-        confidence: result.confidence,
+        ...(typeof result.confidence === 'number' ? { confidence: result.confidence } : {}),
         model,
         latencyMs,
-        contextTokens,
+        ...(typeof contextTokens === 'number' ? { contextTokens } : {}),
         contextSources,
         routing: {
           task: params.task,
@@ -684,15 +704,15 @@ export class UnifiedOrchestrator {
   async executeAdaptive(params: {
     task: string;
     userId: string;
-    companyId?: string;
+    companyId: string;
     conversationId?: string;
     preferredAgentId?: string;
   }): Promise<AdaptiveResult> {
-    const companyId = params.companyId || 'default-company';
+    const companyId = params.companyId;
 
     // Classify the task to determine the reasoning path
     const classification = classifyTask(params.task, 'orchestrator', 'router');
-    const reasoningPath = await this.determineReasoningPath(params.task, classification);
+    const reasoningPath = await this.determineReasoningPath(params.task, classification, companyId);
 
     // Delegate to the appropriate path
     if (reasoningPath === 'enterprise') {
@@ -706,10 +726,9 @@ export class UnifiedOrchestrator {
       // Wrap collaboration result into AdaptiveResult shape
       return {
         content: collabResult.content,
-        confidence: collabResult.synthesisConfidence,
+        ...(typeof collabResult.synthesisConfidence === 'number' ? { confidence: collabResult.synthesisConfidence } : {}),
         model: collabResult.synthesisModel,
         latencyMs: collabResult.totalLatencyMs,
-        contextTokens: 0,
         contextSources: `collaboration:${collabResult.departmentsInvolved.join(',')}`,
         routing: {
           task: params.task,
@@ -720,12 +739,16 @@ export class UnifiedOrchestrator {
             role: 'orchestrator',
             score: 1.0,
           },
-          alternatives: collabResult.contributions.map(c => ({
-            agentId: c.agentId,
-            agentName: c.agentName,
-            departmentName: c.departmentName,
-            score: c.confidence,
-          })),
+          alternatives: collabResult.contributions.flatMap((contribution) =>
+            typeof contribution.routingScore === 'number'
+              ? [{
+                  agentId: contribution.agentId,
+                  agentName: contribution.agentName,
+                  departmentName: contribution.departmentName,
+                  score: contribution.routingScore,
+                }]
+              : [],
+          ),
           reasoning: `Enterprise path: ${collabResult.departmentsInvolved.length} departments, ${collabResult.contributions.length} agents`,
           totalCandidates: collabResult.contributions.length,
           routingTimeMs: 0,
@@ -767,14 +790,19 @@ export class UnifiedOrchestrator {
   async executeCollaborative(params: {
     task: string;
     userId: string;
-    companyId?: string;
+    companyId: string;
   }): Promise<CollaborationResult> {
-    const companyId = params.companyId || 'default-company';
+    const companyId = params.companyId;
+    const membership = await db.companyUser.findUnique({
+      where: { companyId_userId: { companyId, userId: params.userId } },
+      select: { id: true },
+    });
+    if (!membership) throw new Error('Forbidden');
     const collabStart = Date.now();
 
-    // Step 1: Get all departments and their agents
+    // Step 1: Get the active agents available to this company.
     const agents = await db.agent.findMany({
-      where: { status: 'active' },
+      where: { status: 'active', agentCompanyAccess: { some: { companyId } } },
       select: {
         agentId: true, name: true, role: true, type: true,
         departmentName: true, departmentId: true, purpose: true, allowedSkills: true,
@@ -852,7 +880,8 @@ export class UnifiedOrchestrator {
           departmentName: fallbackResult.routing.selectedAgent.departmentName,
           subTask: params.task,
           result: fallbackResult.content,
-          confidence: fallbackResult.confidence,
+          ...(typeof fallbackResult.confidence === 'number' ? { confidence: fallbackResult.confidence } : {}),
+          routingScore: fallbackResult.routing.selectedAgent.score,
           latencyMs: fallbackResult.latencyMs,
           status: 'fulfilled',
         }],
@@ -880,7 +909,8 @@ export class UnifiedOrchestrator {
           departmentName: deptInfo.dept,
           subTask: params.task,
           result: taskResult.result?.content || '',
-          confidence: taskResult.result?.confidence || 0,
+          routingScore: deptInfo.score,
+          ...(typeof taskResult.result?.confidence === 'number' ? { confidence: taskResult.result.confidence } : {}),
           latencyMs: taskResult.result?.metadata?.latencyMs as number || 0,
           status: 'fulfilled' as const,
         };
@@ -891,7 +921,7 @@ export class UnifiedOrchestrator {
           departmentName: deptInfo.dept,
           subTask: params.task,
           result: '',
-          confidence: 0,
+          routingScore: deptInfo.score,
           latencyMs: 0,
           status: 'rejected' as const,
           error: error instanceof Error ? error.message : String(error),
@@ -907,7 +937,6 @@ export class UnifiedOrchestrator {
         departmentName: 'Unknown',
         subTask: params.task,
         result: '',
-        confidence: 0,
         latencyMs: 0,
         status: 'rejected' as const,
         error: r.reason?.message || String(r.reason),
@@ -918,7 +947,7 @@ export class UnifiedOrchestrator {
     const fulfilledContributions = agentContributions.filter(c => c.status === 'fulfilled' && c.result);
     let synthesizedContent = '';
     let synthesisModel = 'unknown';
-    let synthesisConfidence = 0;
+    let synthesisConfidence: number | undefined;
 
     if (fulfilledContributions.length > 0) {
       try {
@@ -939,14 +968,20 @@ export class UnifiedOrchestrator {
         );
         synthesizedContent = synthesisResponse.content;
         synthesisModel = synthesisResponse.model;
-        synthesisConfidence = fulfilledContributions.reduce((sum, c) => sum + c.confidence, 0) / fulfilledContributions.length;
+        const knownConfidences = fulfilledContributions.flatMap((contribution) => typeof contribution.confidence === 'number' ? [contribution.confidence] : []);
+        synthesisConfidence = knownConfidences.length > 0
+          ? knownConfidences.reduce((sum, confidence) => sum + confidence, 0) / knownConfidences.length
+          : undefined;
       } catch (synthErr) {
         console.warn('[Orchestrator] Synthesis failed, falling back to concatenation:', synthErr);
         synthesizedContent = fulfilledContributions
           .map(c => `### ${c.departmentName} (${c.agentName})\n${c.result}`)
           .join('\n\n');
         synthesisModel = 'fallback';
-        synthesisConfidence = fulfilledContributions.reduce((sum, c) => sum + c.confidence, 0) / fulfilledContributions.length;
+        const knownConfidences = fulfilledContributions.flatMap((contribution) => typeof contribution.confidence === 'number' ? [contribution.confidence] : []);
+        synthesisConfidence = knownConfidences.length > 0
+          ? knownConfidences.reduce((sum, confidence) => sum + confidence, 0) / knownConfidences.length
+          : undefined;
       }
     } else {
       synthesizedContent = 'All specialist agents failed to produce results. Please try again or rephrase the task.';
@@ -961,6 +996,8 @@ export class UnifiedOrchestrator {
       const session = await db.collaborationSession.create({
         data: {
           title: params.task.slice(0, 200),
+          companyId,
+          userId: params.userId,
           type: 'task',
           status: 'completed',
           agentIds: JSON.stringify(agentContributions.map(c => c.agentId)),
@@ -1034,10 +1071,10 @@ export class UnifiedOrchestrator {
     });
   }
 
-  /** Get recent agent runs (activity feed) */
-  async getRecentRuns(limit = 10) {
+  /** Get recent agent runs (activity feed) for one company. */
+  async getRecentRuns(limit: number, companyId: string) {
     return db.agentRun.findMany({
-      where: { status: 'completed' },
+      where: { companyId, status: 'completed' },
       orderBy: { createdAt: 'desc' },
       take: limit,
       select: {
@@ -1053,14 +1090,15 @@ export class UnifiedOrchestrator {
     });
   }
 
-  /** Get orchestrator stats */
-  async getStats() {
+  /** Get company-scoped orchestrator stats. */
+  async getStats(companyId: string) {
+    const availableToCompany = { agentCompanyAccess: { some: { companyId } } };
     const [totalAgents, activeAgents, totalConversations, totalMessages, recentRuns] = await Promise.all([
-      db.agent.count(),
-      db.agent.count({ where: { status: 'active' } }),
-      db.conversation.count(),
-      db.conversationMessage.count(),
-      db.agentRun.count({ where: { status: 'completed' } }),
+      db.agent.count({ where: availableToCompany }),
+      db.agent.count({ where: { ...availableToCompany, status: 'active' } }),
+      db.conversation.count({ where: { companyId } }),
+      db.conversationMessage.count({ where: { conversation: { companyId } } }),
+      db.agentRun.count({ where: { companyId, status: 'completed' } }),
     ]);
 
     return {
@@ -1080,9 +1118,10 @@ export class UnifiedOrchestrator {
   private async determineReasoningPath(
     task: string,
     classification: TaskClassification,
+    companyId: string,
   ): Promise<AdaptiveReasoningPath> {
-    // Check for enterprise (multi-department) first
-    const isMultiDept = await this.isMultiDepartmentTask(task);
+    // Check for enterprise (multi-department) first, using this company's agents only.
+    const isMultiDept = await this.isMultiDepartmentTask(task, companyId);
     if (isMultiDept) return 'enterprise';
 
     // Map classification complexity to path
@@ -1105,9 +1144,9 @@ export class UnifiedOrchestrator {
   /**
    * Check if a task spans multiple departments by analyzing agent keyword matches.
    */
-  private async isMultiDepartmentTask(task: string): Promise<boolean> {
+  private async isMultiDepartmentTask(task: string, companyId: string): Promise<boolean> {
     const agents = await db.agent.findMany({
-      where: { status: 'active' },
+      where: { status: 'active', agentCompanyAccess: { some: { companyId } } },
       select: { departmentName: true, purpose: true, agentId: true },
     });
 
@@ -1154,27 +1193,21 @@ export class UnifiedOrchestrator {
   /**
    * Get recent AgentRun counts per agent (last 1 hour) for workload assessment.
    */
-  private async getRecentRunCounts(): Promise<Map<string, number>> {
-    const oneHourAgo = new Date(Date.now() - 3600_000);
-    try {
-      const recentRuns = await db.agentRun.findMany({
-        where: {
-          status: 'completed',
-          createdAt: { gte: oneHourAgo },
-        },
-        select: { agentId: true },
-      });
-
-      const countMap = new Map<string, number>();
-      for (const run of recentRuns) {
-        // agentId in AgentRun is the DB id (Agent.id), not agentId string.
-        // We need to map back, but for workload estimation the raw count per agentId is fine.
-        countMap.set(run.agentId, (countMap.get(run.agentId) || 0) + 1);
-      }
-      return countMap;
-    } catch {
-      return new Map();
+  private async getRecentRunCounts(companyId: string): Promise<Map<string, number>> {
+    const oneHourAgo = new Date(Date.now() - 3600_000)
+    const recentRuns = await db.agentRun.findMany({
+      where: { companyId, status: 'completed', createdAt: { gte: oneHourAgo } },
+      select: { agentId: true },
+    })
+    const countsByDatabaseId = new Map<string, number>()
+    for (const run of recentRuns) {
+      countsByDatabaseId.set(run.agentId, (countsByDatabaseId.get(run.agentId) ?? 0) + 1)
     }
+    const agents = await db.agent.findMany({
+      where: { id: { in: [...countsByDatabaseId.keys()] }, agentCompanyAccess: { some: { companyId } } },
+      select: { id: true, agentId: true },
+    })
+    return new Map(agents.map((agent) => [agent.agentId, countsByDatabaseId.get(agent.id) ?? 0]))
   }
 
   /**
@@ -1185,19 +1218,19 @@ export class UnifiedOrchestrator {
     params: {
       task: string;
       userId: string;
-      companyId?: string;
+      companyId: string;
       conversationId?: string;
       preferredAgentId?: string;
     },
     classification: TaskClassification,
   ): Promise<AdaptiveResult> {
-    const companyId = params.companyId || 'default-company';
+    const companyId = params.companyId;
     const routeStart = Date.now();
 
     // Route to best agent
     const orchestrated: OrchestratedTask = params.preferredAgentId
-      ? await this.routeTaskForPreferred(params) // get OrchestratedTask shape
-      : await this.routeTask(params.task);
+      ? await this.routeTaskForPreferred(params)
+      : await this.routeTask(params.task, companyId);
     const routingTimeMs = Date.now() - routeStart;
 
     // Execute via engine (engine will auto-classify as simple → fast model)
@@ -1218,16 +1251,16 @@ export class UnifiedOrchestrator {
     const result = taskResult.result;
     const metadata = result.metadata as Record<string, unknown> | undefined;
     const model = (metadata?.model as string) || 'unknown';
-    const contextTokens = (metadata?.contextTokens as number) || 0;
-    const contextSources = (metadata?.contextSources as string) || '';
+    const contextTokens = typeof metadata?.estimatedContextTokens === 'number' ? metadata.estimatedContextTokens : undefined;
+    const contextSources = typeof metadata?.contextSources === 'string' ? metadata.contextSources : '';
     const latencyMs = Date.now() - execStart;
 
     return {
       content: result.content,
-      confidence: result.confidence,
+      ...(typeof result.confidence === 'number' ? { confidence: result.confidence } : {}),
       model,
       latencyMs,
-      contextTokens,
+      ...(typeof contextTokens === 'number' ? { contextTokens } : {}),
       contextSources,
       routing: {
         task: params.task,
@@ -1264,7 +1297,7 @@ export class UnifiedOrchestrator {
     params: {
       task: string;
       userId: string;
-      companyId?: string;
+      companyId: string;
       conversationId?: string;
       preferredAgentId?: string;
     },
@@ -1286,13 +1319,18 @@ export class UnifiedOrchestrator {
    */
   private async routeTaskForPreferred(params: {
     task: string;
+    companyId: string;
     preferredAgentId?: string;
   }): Promise<OrchestratedTask> {
     if (!params.preferredAgentId) {
-      return this.routeTask(params.task);
+      return this.routeTask(params.task, params.companyId);
     }
-    const agent = await db.agent.findUnique({
-      where: { agentId: params.preferredAgentId },
+    const agent = await db.agent.findFirst({
+      where: {
+        agentId: params.preferredAgentId,
+        status: 'active',
+        agentCompanyAccess: { some: { companyId: params.companyId } },
+      },
       select: {
         agentId: true, name: true, role: true, type: true,
         departmentName: true, departmentId: true, purpose: true, allowedSkills: true,
@@ -1304,6 +1342,7 @@ export class UnifiedOrchestrator {
       task: params.task,
       selectedAgent: {
         ...agent,
+        agentName: agent.name,
         score: 1.0,
         matchDetails: { department: 0, purpose: 0, skills: 0, role: 0 },
       },
@@ -1321,7 +1360,10 @@ export class UnifiedOrchestrator {
     parts.push('# Specialist Perspectives\n');
     for (let i = 0; i < contributions.length; i++) {
       const c = contributions[i];
-      parts.push(`## ${i + 1}. ${c.agentName} (${c.departmentName}) — Confidence: ${(c.confidence * 100).toFixed(0)}%\n`);
+      const confidenceLabel = typeof c.confidence === 'number'
+        ? `Provider confidence: ${(c.confidence * 100).toFixed(0)}%`
+        : 'Provider confidence: not reported';
+      parts.push(`## ${i + 1}. ${c.agentName} (${c.departmentName}) — ${confidenceLabel}\n`);
       parts.push(c.result);
       parts.push('');
     }

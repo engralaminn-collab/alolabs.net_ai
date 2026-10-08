@@ -39,7 +39,7 @@ const proposalSchema = z.object({
 const learningCycleSchema = z.object({
   agentId: z.string().min(1),
   parentAgentId: z.string().optional(),
-  observations: z.record(z.unknown()).default({}),
+  observations: z.record(z.string(), z.unknown()).default({}),
   failures: z.array(z.string()).default([]),
   proposedImprovement: z.object({
     targetType: z.enum([
@@ -51,11 +51,11 @@ const learningCycleSchema = z.object({
       'knowledge_retrieval',
       'planning',
     ]),
-    currentConfig: z.record(z.unknown()).default({}),
-    proposedConfig: z.record(z.unknown()).default({}),
+    currentConfig: z.record(z.string(), z.unknown()).default({}),
+    proposedConfig: z.record(z.string(), z.unknown()).default({}),
     rationale: z.string().min(1),
   }),
-  metricsBefore: z.record(z.unknown()).default({}),
+  metricsBefore: z.record(z.string(), z.unknown()).default({}),
 })
 
 const emergencyStopSchema = z.object({
@@ -155,7 +155,7 @@ export async function POST(request: NextRequest) {
       }
       if (parsed.data.action === 'trigger') {
         const result = await triggerEmergencyStop(parsed.data.reason, user.userId, parsed.data.scope, parsed.data.targetId)
-        return NextResponse.json({ success: true, ...result })
+        return NextResponse.json({ ...result, success: true })
       } else {
         if (!parsed.data.stopId) {
           return NextResponse.json({ error: 'stopId required to lift stop' }, { status: 400 })

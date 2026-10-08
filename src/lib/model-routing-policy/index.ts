@@ -16,7 +16,8 @@ export type {
   DecisionOutcome,
 } from './types';
 
-export { ModelRoutingPolicyEngine } from './policy-engine';
+import { ModelRoutingPolicyEngine } from './policy-engine';
+export { ModelRoutingPolicyEngine };
 
 let _engine: ModelRoutingPolicyEngine | null = null;
 

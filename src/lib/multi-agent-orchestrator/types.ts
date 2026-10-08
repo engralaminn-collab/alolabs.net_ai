@@ -13,11 +13,12 @@ export interface OrchestrationTask {
   userId: string;
   departmentId?: string;
   priority?: 'P0' | 'P1' | 'P2' | 'P3' | 'P4' | 'P5';
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'cancelled';
   createdAt: Date;
   updatedAt: Date;
   result?: OrchestrationResult;
   error?: string;
+  parallelConfig?: Partial<ParallelExecutionConfig>;
 }
 
 export interface OrchestrationStep {
@@ -30,10 +31,14 @@ export interface OrchestrationStep {
   maxTokens?: number;
   tools?: string[];
   retryCount?: number;
-  status?: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+  status?: 'pending' | 'running' | 'waiting_approval' | 'completed' | 'failed' | 'skipped';
   result?: string;
   error?: string;
   latencyMs?: number;
+  tokensUsed?: number;
+  model?: string;
+  executionId?: string;
+  approvalId?: string;
   startedAt?: Date;
   completedAt?: Date;
 }
@@ -43,7 +48,7 @@ export interface OrchestrationResult {
   steps: OrchestrationStep[];
   totalLatencyMs: number;
   totalTokens: number;
-  costUsd: number;
+  costUsd: number | null;
   agentIds: string[];
   modelUsed: string[];
 }

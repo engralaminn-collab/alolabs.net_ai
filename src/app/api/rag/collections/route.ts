@@ -1,62 +1,49 @@
-import { db } from '@/lib/db'
 import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
+import { db } from '@/lib/db'
+import { requireCompanyAuth } from '@/lib/api-auth'
 
-export async function GET(request: NextRequest) {
-  // Auth check
-  const authHeader = request.headers.get('authorization');
-  const token = authHeader?.replace('Bearer ', '');
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const { verifySessionToken } = await import('@/lib/auth');
-  const session = await verifySessionToken(token);
-  if (!session) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
+const CreateCollectionSchema = z.object({
+  name: z.string().trim().min(1).max(191),
+  description: z.string().trim().max(2000).optional(),
+})
+
+function errorResponse(error: unknown) {
+  const message = error instanceof Error ? error.message : 'Internal server error'
+  const status = message === 'Unauthorized' ? 401 : message === 'Forbidden' ? 403 : 500
+  return NextResponse.json({ success: false, error: message }, { status })
+}
+
+export async function GET() {
   try {
+    const user = await requireCompanyAuth()
     const collections = await db.ragCollection.findMany({
+      where: { companyId: user.companyId },
       orderBy: { createdAt: 'desc' },
+      include: { _count: { select: { documents: true } } },
     })
-
-    return NextResponse.json(collections)
+    return NextResponse.json({ success: true, data: collections })
   } catch (error) {
-    console.error('[RAG Collections List] Error:', error)
-    return NextResponse.json(
-      { error: 'Failed to list RAG collections' },
-      { status: 500 }
-    )
+    return errorResponse(error)
   }
 }
 
 export async function POST(request: NextRequest) {
-  // Auth check
-  const authHeader = request.headers.get('authorization');
-  const token = authHeader?.replace('Bearer ', '');
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const { verifySessionToken } = await import('@/lib/auth');
-  const session = await verifySessionToken(token);
-  if (!session) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
   try {
-    const body = await request.json()
-    const { companyId, name, description } = body
-
-    if (!name) {
-      return NextResponse.json(
-        { error: 'name is required' },
-        { status: 400 }
-      )
+    const user = await requireCompanyAuth()
+    const parsed = CreateCollectionSchema.safeParse(await request.json())
+    if (!parsed.success) {
+      return NextResponse.json({ success: false, error: parsed.error.flatten() }, { status: 400 })
     }
-
     const collection = await db.ragCollection.create({
       data: {
-        companyId: companyId || null,
-        name,
-        description: description || null,
+        companyId: user.companyId,
+        name: parsed.data.name,
+        ...(parsed.data.description ? { description: parsed.data.description } : {}),
       },
     })
-
-    return NextResponse.json(collection, { status: 201 })
+    return NextResponse.json({ success: true, data: collection }, { status: 201 })
   } catch (error) {
-    console.error('[RAG Collection Create] Error:', error)
-    return NextResponse.json(
-      { error: 'Failed to create RAG collection' },
-      { status: 500 }
-    )
+    return errorResponse(error)
   }
 }

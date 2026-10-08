@@ -17,7 +17,7 @@ const AgentFactorySchema = z.object({
   permissions: z.array(z.string()).default([]),
   budgetLimit: z.number().min(0).default(10),
   triggers: z.array(z.string()).optional(),
-  outputSchema: z.record(z.unknown()).optional(),
+  outputSchema: z.record(z.string(), z.unknown()).optional(),
   evaluationPolicy: z.string().optional(),
   expirationMinutes: z.number().int().min(1).optional(),
 });

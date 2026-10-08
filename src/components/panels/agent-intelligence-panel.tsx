@@ -538,7 +538,7 @@ export default function AgentIntelligencePanel() {
                       </p>
                     </div>
                     {agent.protectiveMode?.enabled && (
-                      <Shield className="h-4 w-4 text-emerald-600 shrink-0" title="Protective mode on" />
+                      <Shield className="h-4 w-4 text-emerald-600 shrink-0" role="img" aria-label="Protective mode on" />
                     )}
                   </div>
 

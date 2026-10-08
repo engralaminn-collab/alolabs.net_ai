@@ -5,6 +5,7 @@
  */
 
 import { db } from '@/lib/db';
+import type { Prisma } from '@prisma/client';
 import { hybridSearch } from '@/lib/rag-engine';
 import { buildAgentContext } from '@/lib/context-engine';
 
@@ -128,76 +129,74 @@ export async function retrieveRelevantKnowledge(
   task: string,
   departmentId: string,
   maxResults = 3,
+  companyId?: string,
 ): Promise<RAGContext> {
   const startTime = Date.now();
 
   try {
-    // Try RAG hybrid search first
     const ragResult = await hybridSearch(task, {
       limit: maxResults,
       vectorWeight: 0.7,
       keywordWeight: 0.3,
+      companyId,
     });
 
     if (ragResult.results.length > 0) {
       return {
         query: task,
-        results: ragResult.results.map(r => ({
-          content: r.content,
-          score: r.score,
-          source: r.source || 'rag',
+        results: ragResult.results.map((result) => ({
+          content: result.content,
+          score: result.score,
+          source: result.source || 'rag',
         })),
         totalFound: ragResult.totalFound,
         durationMs: Date.now() - startTime,
       };
     }
   } catch {
-    // RAG search failed, fall back to KnowledgeNode keyword search
+    // Continue with the company-scoped knowledge graph lookup.
   }
 
-  // Fallback: keyword search on KnowledgeNode
-  const keywords = task.toLowerCase().split(/\s+/).filter(w => w.length > 3).slice(0, 5);
-  let knowledgeNodes: Array<{ title: string; content: string; confidence: number }> = [];
-
-  if (keywords.length > 0) {
-    const orConditions = keywords.map(kw => ({
-      OR: [
-        { title: { contains: kw } },
-        { content: { contains: kw } },
+  const keywords = task.toLowerCase().split(/\s+/).filter((word) => word.length > 3).slice(0, 5);
+  const keywordConditions: Prisma.KnowledgeNodeWhereInput[] = keywords.map((keyword) => ({
+    OR: [
+      { title: { contains: keyword } },
+      { content: { contains: keyword } },
+    ],
+  }));
+  const knowledgeNodes = await db.knowledgeNode.findMany({
+    where: {
+      AND: [
+        { OR: [{ departmentId: null }, { departmentId }] },
+        ...(keywords.length > 0 ? [{ OR: keywordConditions }] : []),
+        ...(companyId ? [{ metadata: { contains: companyId } }] : []),
       ],
-    }));
-    knowledgeNodes = await db.knowledgeNode.findMany({
-      where: {
-        OR: [
-          { departmentId: null },
-          { departmentId },
-        ],
-        ...orConditions[0],
-      },
-      orderBy: { confidence: 'desc' },
-      take: maxResults,
-    });
-  } else {
-    knowledgeNodes = await db.knowledgeNode.findMany({
-      where: {
-        OR: [
-          { departmentId: null },
-          { departmentId },
-        ],
-      },
-      orderBy: { confidence: 'desc' },
-      take: maxResults,
-    });
-  }
+    },
+    select: { title: true, content: true, confidence: true, metadata: true },
+    orderBy: { confidence: 'desc' },
+    take: companyId ? maxResults * 10 : maxResults,
+  });
+
+  const scopedKnowledgeNodes = companyId
+    ? knowledgeNodes.filter((node) => {
+        try {
+          const metadata: unknown = JSON.parse(node.metadata);
+          return typeof metadata === 'object' && metadata !== null &&
+            'companyId' in metadata && metadata.companyId === companyId;
+        } catch {
+          return false;
+        }
+      }).slice(0, maxResults)
+    : knowledgeNodes;
 
   return {
     query: task,
-    results: knowledgeNodes.map(k => ({
-      content: `## ${k.title}\n${k.content}`,
-      score: k.confidence,
+    results: scopedKnowledgeNodes.map((node) => ({
+      content: `## ${node.title}\n${node.content}`,
+      score: node.confidence,
       source: 'knowledge-graph',
     })),
-    totalFound: knowledgeNodes.length,
+    totalFound: scopedKnowledgeNodes.length,
     durationMs: Date.now() - startTime,
   };
 }
@@ -264,66 +263,61 @@ export function validateExecution(result: string, task: string, _agentRole: stri
  */
 export async function storeExecutionMemory(params: {
   agentDbId: string;
-  agentId: string;
+  companyId: string;
+  taskId: string;
   task: string;
   result: string;
   model: string;
   latencyMs: number;
-  confidence: number;
   validation: ValidationResult;
   contextSources: string;
 }): Promise<void> {
-  const { agentDbId, agentId, task, result, model, latencyMs, confidence, validation, contextSources } = params;
-
-  // Determine memory category based on validation
+  const { agentDbId, companyId, taskId, task, result, model, latencyMs, validation, contextSources } = params;
   const category = validation.passed ? 'learning' : 'correction';
+  const memoryContent = result.length > 500 ? `${result.substring(0, 500)}...` : result;
+  const failedChecks = validation.checks.filter((check) => !check.passed).map((check) => check.name);
+  const memoryEntry = [
+    `Task: ${task.substring(0, 100)}${task.length > 100 ? '...' : ''}`,
+    `Model: ${model}`,
+    `Heuristic validation: ${validation.checks.filter((check) => check.passed).length}/${validation.checks.length} checks passed`,
+    `Latency: ${latencyMs}ms`,
+    contextSources ? `Context sources: ${contextSources}` : undefined,
+    memoryContent,
+  ].filter((part): part is string => Boolean(part)).join(' | ');
 
-  // Create a concise memory entry (truncated to prevent bloat)
-  const maxMemoryLength = 500;
-  const memoryContent = result.length > maxMemoryLength
-    ? result.substring(0, maxMemoryLength) + '...'
-    : result;
-
-  const memoryEntry = `Task: ${task.substring(0, 100)}${task.length > 100 ? '...' : ''} | Model: ${model} | Confidence: ${(confidence * 100).toFixed(0)}% | Validation: ${(validation.score * 100).toFixed(0)}% | Latency: ${latencyMs}ms | ${memoryEntry}`;
-
-  // Store as agent memory
   await db.agentMemory.create({
     data: {
       agentId: agentDbId,
+      companyId,
       category,
       content: memoryEntry,
-      temperature: validation.passed ? 'warm' : 'hot', // Hot = recent failure, needs attention
-      useCount: 1,
-      successCount: validation.passed ? 1 : 0,
+      temperature: 'hot',
+      useCount: 0,
+      successCount: 0,
+      failCount: 0,
+      confidence: 0,
+      source: 'runtime_unverified',
+      isVerified: false,
     },
-  }).catch(() => { /* best-effort */ });
+  }).catch(() => { /* memory is best-effort and remains unverified */ });
 
-  // If validation failed, create a correction memory for faster retrieval
-  if (!validation.passed) {
-    const failedChecks = validation.checks.filter(c => !c.passed).map(c => c.name).join(', ');
-    await db.agentMemory.create({
-      data: {
-        agentId: agentDbId,
-        category: 'correction',
-        content: `Failed validation on: ${failedChecks}. Task was: ${task.substring(0, 80)}. Improve: provide substantive, relevant, structured responses without error patterns.`,
-        temperature: 'hot',
-        useCount: 0,
-        successCount: 0,
-      },
-    }).catch(() => { /* best-effort */ });
-  }
-
-  // Create a learning report for analytics
   await db.learningReport.create({
     data: {
-      agentId,
-      whatWorked: validation.passed ? [`${model} model, ${(confidence * 100).toFixed(0)}% confidence, ${latencyMs}ms latency`] : [],
-      whatFailed: validation.passed ? [] : validation.checks.filter(c => !c.passed).map(c => `${c.name}: ${c.detail}`),
-      corrections: validation.passed ? [] : ['Improve response quality and relevance'],
-      pattern: validation.score >= 0.8 ? 'high_quality' : validation.score >= 0.6 ? 'acceptable' : 'needs_improvement',
-      suggestion: validation.score < 0.8 ? 'Consider using a more capable model or providing richer context' : null,
+      taskId,
+      agentId: agentDbId,
+      whatWorked: JSON.stringify(validation.passed ? [
+        `Model ${model} returned a response`,
+        `Observed latency ${latencyMs}ms`,
+        ...(contextSources ? [`Context sources: ${contextSources}`] : []),
+      ] : []),
+      whatFailed: JSON.stringify(validation.passed ? [] : validation.checks
+        .filter((check) => !check.passed)
+        .map((check) => `${check.name}: ${check.detail}`)),
+      corrections: JSON.stringify(failedChecks),
+      pattern: `heuristic_checks_${validation.checks.filter((check) => check.passed).length}_of_${validation.checks.length}`,
+      suggestion: failedChecks.length > 0 ? `Review failed heuristic checks: ${failedChecks.join(', ')}` : null,
     },
-  }).catch(() => { /* best-effort */ });
+  }).catch(() => { /* learning reports are best-effort */ });
 }
 
 // ─── Conversation History ───────────────────────────────────────
@@ -341,63 +335,98 @@ export interface ConversationMessage {
  */
 export async function loadConversationHistory(
   conversationId: string,
+  companyId: string,
+  userId: string,
   maxMessages = 10,
 ): Promise<ConversationMessage[]> {
+  const conversation = await db.conversation.findFirst({
+    where: { id: conversationId, companyId, userId },
+    select: { id: true },
+  });
+  if (!conversation) return [];
+
   const messages = await db.conversationMessage.findMany({
     where: { conversationId },
     orderBy: { createdAt: 'asc' },
-    take: maxMessages,
+    take: Math.min(Math.max(maxMessages, 1), 100),
   });
 
-  return messages.map(m => ({
-    role: (m.role as 'system' | 'user' | 'agent') || 'user',
-    content: m.content,
-    timestamp: m.createdAt.toISOString(),
+  return messages.map((message) => ({
+    role: message.role === 'system' || message.role === 'agent' ? message.role : 'user',
+    content: message.content,
+    timestamp: message.createdAt.toISOString(),
+    ...(message.model ? { model: message.model } : {}),
+    ...(typeof message.confidence === 'number' ? { confidence: message.confidence } : {}),
   }));
 }
 
-/**
- * Persists a conversation message to the database.
- */
 export async function persistConversationMessages(params: {
   conversationId: string;
+  companyId: string;
   userId: string;
   agentId: string;
+  agentName: string;
   departmentId: string;
   userMessage: string;
   agentResponse: string;
   model: string;
+  tokensUsed: number;
   latencyMs: number;
   contextSources: string;
-  contextTokens: number;
-  confidence: number;
+  confidence?: number;
 }): Promise<void> {
-  const { conversationId, userId, agentId, departmentId, userMessage, agentResponse, model, latencyMs, contextSources, contextTokens, confidence } = params;
+  const {
+    conversationId, companyId, userId, agentId, agentName, departmentId,
+    userMessage, agentResponse, model, tokensUsed, latencyMs, contextSources, confidence,
+  } = params;
 
-  // Ensure conversation exists
-  await db.conversation.upsert({
-    where: { id: conversationId },
-    update: { updatedAt: new Date(), status: 'active' },
-    create: {
-      id: conversationId,
-      userId,
-      agentId,
-      departmentId,
-      companyId: 'default-company',
-      title: userMessage.substring(0, 100),
-      status: 'active',
-    },
-  }).catch(() => { /* best-effort */ });
+  await db.$transaction(async (transaction) => {
+    const existing = await transaction.conversation.findFirst({
+      where: { id: conversationId, companyId, userId },
+      select: { id: true },
+    });
+    if (existing) {
+      await transaction.conversation.update({
+        where: { id: existing.id },
+        data: { updatedAt: new Date(), status: 'active' },
+      });
+    } else {
+      const conflictingId = await transaction.conversation.findUnique({
+        where: { id: conversationId },
+        select: { id: true },
+      });
+      if (conflictingId) throw new Error('Conversation does not belong to this user and company');
+      await transaction.conversation.create({
+        data: {
+          id: conversationId,
+          userId,
+          companyId,
+          agentId,
+          departmentId,
+          title: userMessage.substring(0, 100),
+          status: 'active',
+        },
+      });
+    }
 
-  // Store user message
-  await db.conversationMessage.create({
-    data: { conversationId, role: 'user', content: userMessage },
-  }).catch(() => { /* best-effort */ });
-
-  // Store agent response
-  await db.conversationMessage.create({
-    data: { conversationId, role: 'agent', content: agentResponse },
-  }).catch(() => { /* best-effort */ });
+    await transaction.conversationMessage.create({
+      data: { conversationId, role: 'user', content: userMessage },
+    });
+    await transaction.conversationMessage.create({
+      data: {
+        conversationId,
+        role: 'agent',
+        agentId,
+        agentName,
+        content: agentResponse,
+        model,
+        tokensUsed,
+        latencyMs,
+        ...(typeof confidence === 'number' ? { confidence } : {}),
+        metadata: JSON.stringify({ contextSources }),
+      },
+    });
+  });
 }
 
 // ─── Agent Delegation Detection ──────────────────────────────────

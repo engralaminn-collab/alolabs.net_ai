@@ -8,7 +8,6 @@
       "esnext"
     ],
     "allowJs": true,
-    "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
     "noImplicitAny": true,
@@ -28,7 +27,8 @@
       "@/*": [
         "./src/*"
       ]
-    }
+    },
+    "skipLibCheck": false
   },
   "include": [
     "next-env.d.ts",

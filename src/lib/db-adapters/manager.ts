@@ -4,6 +4,7 @@
  * configuration, health monitoring, and unified migration execution.
  */
 
+import { createRequire } from 'node:module';
 import type {
   DatabaseType,
   DatabaseConfig,
@@ -470,7 +471,7 @@ export class DatabaseManager {
         if (connected) return;
 
         try {
-          const req = typeof __non_webpack_require__ !== 'undefined' ? __non_webpack_require__ : eval('require');
+          const req = createRequire(`${process.cwd()}/package.json`);
           const Database = req('better-sqlite3');
           const dbPath = config.url
             ? config.url.replace('file:', '')

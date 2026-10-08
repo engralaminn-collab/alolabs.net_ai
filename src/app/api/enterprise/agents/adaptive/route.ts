@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/api-auth';
+import { requireCompanyAuth } from '@/lib/api-auth';
 import { getOrchestrator } from '@/lib/orchestrator';
 import { z } from 'zod';
 
@@ -10,7 +10,7 @@ const AdaptiveRunSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    const user = await requireAuth();
+    const user = await requireCompanyAuth();
 
     const body = await request.json();
     const parsed = AdaptiveRunSchema.safeParse(body);
@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
     const adaptiveResult = await orchestrator.executeAdaptive({
       task,
       userId: user.userId,
-      companyId: 'default-company',
+      companyId: user.companyId,
       preferredAgentId,
     });
 

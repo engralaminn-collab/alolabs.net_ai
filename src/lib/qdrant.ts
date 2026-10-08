@@ -1,377 +1,443 @@
-/**
- * Qdrant Vector Database Adapter
- * Provides vector similarity search, collection management, and point operations.
- * Uses Qdrant REST API via fetch (no native dependency).
- * Falls back to SQLite-based storage when Qdrant is not available.
- */
-
-import { db } from './db';
+import { createHash } from 'node:crypto'
+import { db } from './db'
+import type { Prisma } from '@prisma/client'
 
 export interface QdrantConfig {
-  host: string;
-  port: number;
-  apiKey?: string;
-  timeoutMs?: number;
+  host: string
+  port: number
+  protocol?: 'http' | 'https'
+  apiKey?: string
+  timeoutMs?: number
 }
 
-let config: QdrantConfig | null = null;
-let connected = false;
-let connectionError: string | null = null;
+interface QdrantCollectionSummary {
+  name: string
+  vectors_count: number
+  points_count: number
+  status: string
+}
+
+interface QdrantPoint {
+  id: string
+  score: number
+  payload: Record<string, unknown>
+}
+
+class QdrantRequestError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message)
+    this.name = 'QdrantRequestError'
+  }
+}
+
+let config: QdrantConfig | null = null
+let connected = false
+let connectionError: string | null = null
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
 
 function getBaseUrl(): string {
-  if (!config) throw new Error('Qdrant not configured');
-  const protocol = config.port === 6333 ? 'http' : 'https';
-  return `${protocol}://${config.host}:${config.port}`;
+  if (!config) throw new Error('Qdrant is not configured')
+  const protocol = config.protocol ?? (config.port === 6333 ? 'http' : 'https')
+  return `${protocol}://${config.host}:${config.port}`
+}
+
+function collectionPath(name: string): string {
+  return `/collections/${encodeURIComponent(name)}`
 }
 
 async function qdrantRequest(path: string, options: RequestInit = {}): Promise<Response> {
-  const url = `${getBaseUrl()}${path}`;
+  if (!config) throw new Error('Qdrant is not configured')
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string> || {}),
-  };
-  if (config?.apiKey) {
-    headers['api-key'] = config.apiKey;
+    ...(options.headers as Record<string, string> | undefined),
   }
+  if (config.apiKey) headers['api-key'] = config.apiKey
 
-  const response = await fetch(url, {
+  const response = await fetch(`${getBaseUrl()}${path}`, {
     ...options,
     headers,
-    signal: AbortSignal.timeout(config?.timeoutMs || 10000),
-  });
-
+    signal: AbortSignal.timeout(config.timeoutMs ?? 10_000),
+  })
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Qdrant ${response.status}: ${text}`);
+    const text = await response.text().catch(() => '')
+    throw new QdrantRequestError(response.status, text || `Qdrant returned HTTP ${response.status}`)
   }
-
-  return response;
+  return response
 }
 
-export async function connectQdrant(cfg?: QdrantConfig): Promise<{ success: boolean; error?: string; latencyMs?: number; version?: string }> {
-  const startTime = Date.now();
+export async function connectQdrant(
+  cfg?: QdrantConfig,
+): Promise<{ success: boolean; error?: string; latencyMs?: number; version?: string }> {
+  const startedAt = Date.now()
+  config = cfg ?? getDefaultConfig()
+  if (!config) {
+    connected = false
+    connectionError = 'Qdrant configuration is missing'
+    return { success: false, error: connectionError }
+  }
 
   try {
-    config = cfg || getDefaultConfig();
+    const response = await qdrantRequest('/collections')
+    const payload: unknown = await response.json()
+    const status = isRecord(payload) && isRecord(payload.status) ? payload.status : {}
+    const result = isRecord(payload) && isRecord(payload.result) ? payload.result : {}
+    const collections = Array.isArray(result.collections) ? result.collections : []
+    const latencyMs = Date.now() - startedAt
 
-    if (!config) {
-      connectionError = 'Qdrant: No configuration provided. Set QDRANT_URL or QDRANT_HOST env var.';
-      connected = false;
-      return { success: false, error: connectionError };
-    }
+    connected = true
+    connectionError = null
+    const version = typeof status.version === 'string' ? status.version : 'unknown'
+    await db.infraService.upsert({
+      where: { type: 'qdrant' },
+      create: {
+        name: 'Qdrant',
+        type: 'qdrant',
+        host: config.host,
+        port: config.port,
+        status: 'connected',
+        connectedAt: new Date(),
+        lastPingAt: new Date(),
+        latencyMs,
+        version,
+        statsJson: JSON.stringify({ collections: collections.length }),
+      },
+      update: {
+        host: config.host,
+        port: config.port,
+        status: 'connected',
+        connectedAt: new Date(),
+        lastPingAt: new Date(),
+        latencyMs,
+        version,
+        statsJson: JSON.stringify({ collections: collections.length }),
+        errorCount: 0,
+        lastError: null,
+      },
+    }).catch(() => {})
 
-    const response = await qdrantRequest('/collections');
-    const data = await response.json();
-    const latencyMs = Date.now() - startTime;
-
-    connected = true;
-    connectionError = null;
-
-    // Update InfraService
-    try {
-      await db.infraService.upsert({
-        where: { type: 'qdrant' },
-        create: {
-          name: 'Qdrant',
-          type: 'qdrant',
-          host: config.host,
-          port: config.port,
-          status: 'connected',
-          connectedAt: new Date(),
-          lastPingAt: new Date(),
-          latencyMs,
-          version: data.status?.version || 'unknown',
-          statsJson: JSON.stringify({ collections: data.result?.collections?.length || 0 }),
-        },
-        update: {
-          host: config.host,
-          port: config.port,
-          status: 'connected',
-          connectedAt: new Date(),
-          lastPingAt: new Date(),
-          latencyMs,
-          version: data.status?.version || 'unknown',
-          statsJson: JSON.stringify({ collections: data.result?.collections?.length || 0 }),
-          errorCount: 0,
-          lastError: null,
-        },
-      });
-    } catch { /* ignore */ }
-
-    return { success: true, latencyMs, version: data.status?.version };
-  } catch (err: unknown) {
-    const error = err instanceof Error ? err.message : String(err);
-    connected = false;
-    connectionError = error;
-
-    try {
-      await db.infraService.upsert({
-        where: { type: 'qdrant' },
-        create: { name: 'Qdrant', type: 'qdrant', status: 'error', lastError: error, errorCount: 1 },
-        update: { status: 'error', lastError: error, errorCount: { increment: 1 } },
-      });
-    } catch { /* ignore */ }
-
-    return { success: false, error, latencyMs: Date.now() - startTime };
+    return { success: true, latencyMs, version }
+  } catch (error) {
+    connectionError = error instanceof Error ? error.message : 'Qdrant connection failed'
+    connected = false
+    await db.infraService.upsert({
+      where: { type: 'qdrant' },
+      create: { name: 'Qdrant', type: 'qdrant', status: 'error', lastError: connectionError, errorCount: 1 },
+      update: { status: 'error', lastError: connectionError, errorCount: { increment: 1 } },
+    }).catch(() => {})
+    return { success: false, error: connectionError, latencyMs: Date.now() - startedAt }
   }
 }
 
 export function isQdrantConnected(): boolean {
-  return connected;
+  return connected
 }
 
 export function getQdrantError(): string | null {
-  return connectionError;
+  return connectionError
 }
 
-// ─── Collection Operations ───────────────────────────────────────────────────
+export async function createCollection(
+  name: string,
+  vectorSize = 1536,
+  distance: 'cosine' | 'euclid' | 'dot' = 'cosine',
+): Promise<void> {
+  if (!connected) throw new Error('Qdrant is not connected')
+  if (!Number.isSafeInteger(vectorSize) || vectorSize < 1) throw new Error('Vector size must be a positive integer')
 
-export async function createCollection(name: string, vectorSize: number = 1536, distance: 'cosine' | 'euclid' | 'dot' = 'cosine'): Promise<void> {
-  if (connected) {
-    await qdrantRequest(`/collections/${name}`, {
-      method: 'PUT',
-      body: JSON.stringify({
-        vectors: { size: vectorSize, distance },
-      }),
-    });
-    return;
+  try {
+    await qdrantRequest(collectionPath(name))
+    return
+  } catch (error) {
+    if (!(error instanceof QdrantRequestError) || error.status !== 404) throw error
   }
-  // Fallback: mark in RAG collection (no-op for SQLite, vectors stored as floats)
+
+  await qdrantRequest(collectionPath(name), {
+    method: 'PUT',
+    body: JSON.stringify({ vectors: { size: vectorSize, distance } }),
+  })
 }
 
-export async function listCollections(): Promise<{ name: string; vectors_count: number; points_count: number; status: string }[]> {
+export async function listCollections(): Promise<QdrantCollectionSummary[]> {
   if (connected) {
-    const response = await qdrantRequest('/collections');
-    const data = await response.json();
-    return (data.result?.collections || []).map((c: Record<string, unknown>) => ({
-      name: c.name as string,
-      vectors_count: ((((c.config as Record<string, unknown>)?.params) as Record<string, unknown>)?.vectors as Record<string, unknown>)?.size as number || 0,
-      points_count: (c.points_count as number) || 0,
-      status: (c.status as string) || 'unknown',
-    }));
+    const response = await qdrantRequest('/collections')
+    const payload: unknown = await response.json()
+    const result = isRecord(payload) && isRecord(payload.result) ? payload.result : {}
+    const collections = Array.isArray(result.collections) ? result.collections : []
+    return collections.flatMap((entry): QdrantCollectionSummary[] => {
+      if (!isRecord(entry) || typeof entry.name !== 'string') return []
+      const points = asNumber(entry.points_count) ?? 0
+      return [{
+        name: entry.name,
+        vectors_count: asNumber(entry.vectors_count) ?? points,
+        points_count: points,
+        status: typeof entry.status === 'string' ? entry.status : 'unknown',
+      }]
+    })
   }
-  // Fallback: return collections from DB
+
   const collections = await db.ragCollection.findMany({
-    select: { name: true },
-  });
-  const chunks = await db.ragChunk.count();
-  return collections.map((c) => ({
-    name: c.name,
-    vectors_count: 1536,
-    points_count: Math.floor(chunks / collections.length),
-    status: 'green',
-  }));
+    select: { name: true, documents: { select: { chunks: { select: { embedding: true } } } } },
+  })
+  return collections.map((collection) => {
+    const chunks = collection.documents.flatMap((document) => document.chunks)
+    return {
+      name: collection.name,
+      vectors_count: chunks.filter((chunk) => chunk.embedding !== null).length,
+      points_count: chunks.length,
+      status: 'mysql-local',
+    }
+  })
 }
 
 export async function deleteCollection(name: string): Promise<void> {
-  if (connected) {
-    await qdrantRequest(`/collections/${name}`, { method: 'DELETE' });
-    return;
-  }
+  if (!connected) throw new Error('Qdrant is not connected')
+  await qdrantRequest(collectionPath(name), { method: 'DELETE' })
 }
 
-// ─── Point Operations ────────────────────────────────────────────────────────
-
-export async function upsertPoints(collection: string, points: { id: string; vector: number[]; payload?: Record<string, unknown> }[]): Promise<void> {
-  if (connected) {
-    await qdrantRequest(`/collections/${collection}/points`, {
-      method: 'PUT',
-      body: JSON.stringify({ points: points.map((p) => ({ id: p.id, vector: p.vector, payload: p.payload })) }),
-    });
-    return;
-  }
-  // Fallback: store embedding in ragChunk metadata
+export async function upsertPoints(
+  collection: string,
+  points: Array<{ id: string; vector: number[]; payload?: Record<string, unknown> }>,
+): Promise<void> {
+  if (!connected) throw new Error('Qdrant is not connected; embeddings must be persisted in MySQL')
   for (const point of points) {
-    if (point.payload?.chunkId) {
-      await db.ragChunk.update({
-        where: { id: point.payload.chunkId as string },
-        data: { metadata: JSON.stringify({ ...point.payload, embedding: point.vector.slice(0, 10), vectorStored: true }) },
-      }).catch(() => {});
+    if (point.vector.length === 0 || point.vector.some((value) => !Number.isFinite(value))) {
+      throw new Error('Cannot upsert an invalid embedding vector')
     }
   }
+
+  await qdrantRequest(`${collectionPath(collection)}/points`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      points: points.map((point) => ({
+        id: toQdrantPointId(point.id),
+        vector: point.vector,
+        payload: { ...point.payload, chunkId: point.payload?.chunkId ?? point.id },
+      })),
+    }),
+  })
 }
 
 export async function searchPoints(
   collection: string,
   vector: number[],
-  limit: number = 5,
-  filter?: Record<string, unknown>
-): Promise<{ id: string; score: number; payload: Record<string, unknown> }[]> {
-  if (connected) {
-    const body: Record<string, unknown> = {
-      vector,
-      limit,
-      with_payload: true,
-    };
-    if (filter) body.filter = filter;
-
-    const response = await qdrantRequest(`/collections/${collection}/points/search`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-    const data = await response.json();
-    return (data.result || []).map((r: Record<string, unknown>) => ({
-      id: r.id as string,
-      score: r.score as number,
-      payload: (r.payload as Record<string, unknown>) || {},
-    }));
+  limit = 5,
+  filter?: Record<string, unknown>,
+): Promise<QdrantPoint[]> {
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('Search limit must be a positive integer')
+  if (vector.length === 0 || vector.some((value) => !Number.isFinite(value))) {
+    throw new Error('Query embedding is invalid')
   }
 
-  // Fallback: cosine similarity on stored embeddings
-  return fallbackVectorSearch(vector, limit, filter);
+  if (!connected) return fallbackVectorSearch(vector, limit, filter)
+
+  const qdrantFilter = buildQdrantFilter(filter)
+  const response = await qdrantRequest(`${collectionPath(collection)}/points/search`, {
+    method: 'POST',
+    body: JSON.stringify({
+      vector,
+      limit: Math.min(limit, 1000),
+      with_payload: true,
+      ...(qdrantFilter ? { filter: qdrantFilter } : {}),
+    }),
+  })
+  const payload: unknown = await response.json()
+  const results = isRecord(payload) && Array.isArray(payload.result) ? payload.result : []
+  return results.flatMap((entry): QdrantPoint[] => {
+    if (!isRecord(entry)) return []
+    const score = asNumber(entry.score)
+    if (score === undefined) return []
+    const rawId = typeof entry.id === 'string' || typeof entry.id === 'number' ? String(entry.id) : ''
+    const pointPayload = isRecord(entry.payload) ? entry.payload : {}
+    const id = typeof pointPayload.chunkId === 'string' ? pointPayload.chunkId : rawId
+    if (!id) return []
+    return [{ id, score, payload: pointPayload }]
+  })
 }
 
 export async function deletePoints(collection: string, ids: string[]): Promise<void> {
-  if (connected) {
-    await qdrantRequest(`/collections/${collection}/points/delete`, {
-      method: 'POST',
-      body: JSON.stringify({ points: ids.map((id) => ({ id })) }),
-    });
-    return;
-  }
+  if (!connected) throw new Error('Qdrant is not connected')
+  if (ids.length === 0) return
+  await qdrantRequest(`${collectionPath(collection)}/points/delete`, {
+    method: 'POST',
+    body: JSON.stringify({ points: ids.map((id) => toQdrantPointId(id)) }),
+  })
 }
 
-// ─── Fallback Vector Search ───────────────────────────────────────────────────
+function buildQdrantFilter(filter?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!filter) return undefined
+  const must: Array<Record<string, unknown>> = []
+  for (const key of ['companyId', 'collectionId']) {
+    const value = filter[key]
+    if (typeof value === 'string') must.push({ key, match: { value } })
+  }
+  return must.length > 0 ? { must } : undefined
+}
+
+function toQdrantPointId(id: string): string {
+  const characters = createHash('sha256').update(id).digest('hex').slice(0, 32).split('')
+  characters[12] = '5'
+  characters[16] = ((Number.parseInt(characters[16], 16) & 0x3) | 0x8).toString(16)
+  const hex = characters.join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
 
 async function fallbackVectorSearch(
   queryVector: number[],
   limit: number,
-  _filter?: Record<string, unknown>
-): Promise<{ id: string; score: number; payload: Record<string, unknown> }[]> {
-  // Get all chunks with embeddings from DB
+  filter?: Record<string, unknown>,
+): Promise<QdrantPoint[]> {
+  const companyId = typeof filter?.companyId === 'string' ? filter.companyId : undefined
+  const collectionId = typeof filter?.collectionId === 'string' ? filter.collectionId : undefined
+  const where: Prisma.RagChunkWhereInput = {
+    embedding: { not: null },
+    ...(companyId ? { companyId } : {}),
+    ...(collectionId ? { document: { is: { collectionId } } } : {}),
+  }
   const chunks = await db.ragChunk.findMany({
+    where,
+    include: { document: { select: { collectionId: true, name: true, source: true } } },
     orderBy: { createdAt: 'desc' },
-    take: 200,
-  });
+    take: 2000,
+  })
 
-  const results: { id: string; score: number; payload: Record<string, unknown> }[] = [];
-
+  const results: QdrantPoint[] = []
   for (const chunk of chunks) {
-    let metadata: Record<string, unknown> = {};
-    try { metadata = JSON.parse(chunk.metadata || '{}'); } catch { /* ignore */ }
-
-    // If chunk has stored embedding prefix, use it for similarity
-    if (metadata.vectorStored && Array.isArray(metadata.embedding)) {
-      // Use stored prefix for approximate similarity (not perfect, but demonstrates the concept)
-      const storedPrefix = metadata.embedding as number[];
-      const queryPrefix = queryVector.slice(0, storedPrefix.length);
-      const score = cosineSimilarity(queryPrefix, storedPrefix);
-      results.push({
-        id: chunk.id,
-        score,
-        payload: { ...metadata, content: chunk.content, position: chunk.position },
-      });
-    } else {
-      // No embedding: use text-based scoring as last resort
-      const queryTerms = queryVector.map((v) => Math.abs(v) > 0.1 ? '1' : '0').join('');
-      const contentHash = chunk.content.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-      const score = 0.3 + (Math.abs(contentHash % 100) / 100) * 0.5; // pseudo-random relevance
-      results.push({
-        id: chunk.id,
-        score,
-        payload: { content: chunk.content, position: chunk.position, metadata },
-      });
+    if (!chunk.embedding) continue
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(chunk.embedding)
+    } catch {
+      continue
     }
+    if (!Array.isArray(parsed)) continue
+    const storedVector = parsed.filter((value): value is number =>
+      typeof value === 'number' && Number.isFinite(value),
+    )
+    if (storedVector.length !== parsed.length || storedVector.length !== queryVector.length) continue
+    results.push({
+      id: chunk.id,
+      score: cosineSimilarity(queryVector, storedVector),
+      payload: {
+        chunkId: chunk.id,
+        documentId: chunk.documentId,
+        collectionId: chunk.document.collectionId,
+        companyId: chunk.companyId,
+        collectionName: chunk.document.name,
+        content: chunk.content,
+        position: chunk.position,
+        source: chunk.document.source,
+      },
+    })
   }
 
-  results.sort((a, b) => b.score - a.score);
-  return results.slice(0, limit);
+  return results.sort((left, right) => right.score - left.score).slice(0, limit)
 }
 
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length || a.length === 0) return 0;
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
+function cosineSimilarity(left: number[], right: number[]): number {
+  if (left.length !== right.length || left.length === 0) return 0
+  let dot = 0
+  let leftMagnitude = 0
+  let rightMagnitude = 0
+  for (let index = 0; index < left.length; index++) {
+    dot += left[index] * right[index]
+    leftMagnitude += left[index] * left[index]
+    rightMagnitude += right[index] * right[index]
   }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
+  const denominator = Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude)
+  return denominator === 0 ? 0 : dot / denominator
 }
-
-// ─── Stats & Health ──────────────────────────────────────────────────────────
 
 export async function getQdrantStats(): Promise<{
-  connected: boolean;
-  version?: string;
-  collectionsCount?: number;
-  totalPoints?: number;
-  totalVectors?: number;
+  connected: boolean
+  version?: string
+  collectionsCount?: number
+  totalPoints?: number
+  totalVectors?: number
 }> {
-  if (!connected) return { connected: false };
-
+  if (!connected) return { connected: false }
   try {
-    const response = await qdrantRequest('/collections');
-    const data = await response.json();
-    const collections = data.result?.collections || [];
-    const totalPoints = collections.reduce((sum: number, c: Record<string, unknown>) => sum + ((c.points_count as number) || 0), 0);
-    const totalVectors = collections.reduce((sum: number, c: Record<string, unknown>) => sum + ((c.vectors_count as number) || 0), 0);
-
+    const response = await qdrantRequest('/collections')
+    const payload: unknown = await response.json()
+    const status = isRecord(payload) && isRecord(payload.status) ? payload.status : {}
+    const result = isRecord(payload) && isRecord(payload.result) ? payload.result : {}
+    const collections = Array.isArray(result.collections) ? result.collections : []
+    const summaries = collections.flatMap((entry) => isRecord(entry) ? [entry] : [])
+    const totalPoints = summaries.reduce((sum, collection) => sum + (asNumber(collection.points_count) ?? 0), 0)
+    const totalVectors = summaries.reduce((sum, collection) => sum + (asNumber(collection.vectors_count) ?? asNumber(collection.points_count) ?? 0), 0)
     return {
       connected: true,
-      version: data.status?.version,
-      collectionsCount: collections.length,
+      ...(typeof status.version === 'string' ? { version: status.version } : {}),
+      collectionsCount: summaries.length,
       totalPoints,
       totalVectors,
-    };
-  } catch {
-    return { connected: true };
+    }
+  } catch (error) {
+    connected = false
+    connectionError = error instanceof Error ? error.message : 'Qdrant statistics query failed'
+    return { connected: false }
   }
 }
 
 export async function pingQdrant(): Promise<{ success: boolean; latencyMs: number; error?: string }> {
-  if (!connected || !config) {
-    return { success: false, latencyMs: 0, error: 'Not connected' };
-  }
-
-  const startTime = Date.now();
+  if (!connected || !config) return { success: false, latencyMs: 0, error: 'Not connected' }
+  const startedAt = Date.now()
   try {
-    await qdrantRequest('/healthz');
-    const latencyMs = Date.now() - startTime;
-
+    await qdrantRequest('/healthz')
+    const latencyMs = Date.now() - startedAt
     await db.infraService.update({
       where: { type: 'qdrant' },
       data: { lastPingAt: new Date(), latencyMs, status: 'connected' },
-    }).catch(() => {});
-
-    return { success: true, latencyMs };
-  } catch (err: unknown) {
-    const error = err instanceof Error ? err.message : String(err);
+    }).catch(() => {})
+    return { success: true, latencyMs }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Qdrant health check failed'
+    connected = false
+    connectionError = message
     await db.infraService.update({
       where: { type: 'qdrant' },
-      data: { status: 'error', lastError: error, errorCount: { increment: 1 } },
-    }).catch(() => {});
-    return { success: false, latencyMs: Date.now() - startTime, error };
+      data: { status: 'error', lastError: message, errorCount: { increment: 1 } },
+    }).catch(() => {})
+    return { success: false, latencyMs: Date.now() - startedAt, error: message }
   }
 }
 
 function getDefaultConfig(): QdrantConfig | null {
   if (process.env.QDRANT_URL) {
     try {
-      const url = new URL(process.env.QDRANT_URL);
+      const url = new URL(process.env.QDRANT_URL)
+      const port = url.port ? Number.parseInt(url.port, 10) : url.protocol === 'https:' ? 443 : 6333
       return {
-        host: url.hostname || 'localhost',
-        port: parseInt(url.port || '6333', 10),
-        apiKey: url.password || undefined,
-      };
+        host: url.hostname,
+        port,
+        protocol: url.protocol === 'https:' ? 'https' : 'http',
+        apiKey: process.env.QDRANT_API_KEY || url.password || undefined,
+      }
     } catch {
-      return null;
+      return null
     }
   }
 
   if (process.env.QDRANT_HOST) {
+    const port = Number.parseInt(process.env.QDRANT_PORT || '6333', 10)
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) return null
     return {
       host: process.env.QDRANT_HOST,
-      port: parseInt(process.env.QDRANT_PORT || '6333', 10),
+      port,
+      protocol: process.env.QDRANT_PROTOCOL === 'https' ? 'https' : 'http',
       apiKey: process.env.QDRANT_API_KEY || undefined,
-      timeoutMs: parseInt(process.env.QDRANT_TIMEOUT || '10000', 10),
-    };
+      timeoutMs: Number.parseInt(process.env.QDRANT_TIMEOUT || '10000', 10),
+    }
   }
-
-  return null;
+  return null
 }
 
 export function getQdrantConfig(): QdrantConfig | null {
-  return config || getDefaultConfig();
+  return config ?? getDefaultConfig()
 }

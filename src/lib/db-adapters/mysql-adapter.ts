@@ -117,7 +117,6 @@ export class MySQLAdapter implements BaseDatabaseAdapter {
 
     // Dynamic import — graceful fallback
     try {
-      // @ts-expect-error -- mysql2 is an optional dependency, gracefully handled
       this.mysql2Module = await import('mysql2/promise');
     } catch {
       throw new DatabaseConnectionError(

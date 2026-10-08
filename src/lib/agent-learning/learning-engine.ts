@@ -1,10 +1,11 @@
 import { db } from '@/lib/db';
 import { ProtectiveFilter } from './protective-filter';
 import { EvolutionTracker } from './evolution-tracker';
-import { EVOLUTION_LEVELS, KNOWLEDGE_CATEGORIES } from './index';
+import { EVOLUTION_LEVELS, SAFETY_LEVELS } from './index';
 
 interface LearningInput {
   agentId: string;
+  companyId: string;
   triggerType: 'task_completion' | 'feedback' | 'scheduled' | 'manual' | 'cross_agent';
   triggerDetail?: string;
   agentRunId?: string;
@@ -44,8 +45,14 @@ export class LearningEngine {
   async learn(input: LearningInput): Promise<LearningResult> {
     const startTime = Date.now();
 
-    // 1. Get current knowledge count for this agent
-    const knowledgeBefore = await db.agentKnowledge.count({ where: { agentId: input.agentId } });
+    const access = await db.agentCompanyAccess.findFirst({
+      where: { agentId: input.agentId, companyId: input.companyId },
+      select: { id: true },
+    })
+    if (!access) throw new Error('Agent is not available to this company')
+
+    // 1. Get current knowledge count for this company and agent
+    const knowledgeBefore = await db.agentMemory.count({ where: { agentId: input.agentId, companyId: input.companyId } });
 
     // 2. Get protective mode config
     const protective = await db.agentProtectiveMode.findUnique({
@@ -60,8 +67,8 @@ export class LearningEngine {
     if (protective) {
       const todayStart = new Date();
       todayStart.setHours(0, 0, 0, 0);
-      const todayCount = await db.agentKnowledge.count({
-        where: { agentId: input.agentId, createdAt: { gte: todayStart } },
+      const todayCount = await db.agentMemory.count({
+        where: { agentId: input.agentId, companyId: input.companyId, createdAt: { gte: todayStart } },
       });
       if (todayCount >= protective.maxKnowledgePerDay) {
         return this.createSession(input, knowledgeBefore, knowledgeBefore, [], ['Daily knowledge limit reached'], 0, startTime);
@@ -74,10 +81,14 @@ export class LearningEngine {
 
     // 5. Filter through protective mode
     const allContent = [...rawInsights, ...rawCorrections];
+    const configuredSafetyLevel = protective?.safetyLevel;
+    const safetyLevel = SAFETY_LEVELS.find((level) => level === configuredSafetyLevel) ?? 'strict';
+    const learningScopes = ['task_domain', 'cross_domain', 'open', 'restricted'] as const;
+    const learningScope = learningScopes.find((scope) => scope === protective?.learningScope) ?? 'task_domain';
     const filteredContent = this.protectiveFilter.filter(
       allContent,
-      protective?.safetyLevel || 'standard',
-      protective?.learningScope || 'task_domain',
+      safetyLevel,
+      learningScope,
       protective?.allowedDomains ? JSON.parse(protective.allowedDomains) : [],
       protective?.blockedPatterns ? JSON.parse(protective.blockedPatterns) : [],
     );
@@ -88,13 +99,12 @@ export class LearningEngine {
 
     // 6. Store knowledge entries
     let knowledgeCreated = 0;
-    const categories = [...KNOWLEDGE_CATEGORIES];
-
     for (const insight of safeInsights) {
       const category = this.categorize(insight, input);
-      await db.agentKnowledge.create({
+      await db.agentMemory.create({
         data: {
           agentId: input.agentId,
+          companyId: input.companyId,
           category,
           content: insight,
           source: input.triggerType,
@@ -107,9 +117,10 @@ export class LearningEngine {
     }
 
     for (const correction of safeCorrections) {
-      await db.agentKnowledge.create({
+      await db.agentMemory.create({
         data: {
           agentId: input.agentId,
+          companyId: input.companyId,
           category: 'correction',
           content: correction,
           source: input.triggerType,
@@ -124,9 +135,10 @@ export class LearningEngine {
     // 7. If task failed, extract error patterns
     if (input.wasSuccess === false && input.error) {
       const errorPattern = `Error pattern: ${input.error.substring(0, 200)}`;
-      await db.agentKnowledge.create({
+      await db.agentMemory.create({
         data: {
           agentId: input.agentId,
+          companyId: input.companyId,
           category: 'correction',
           content: errorPattern,
           source: 'experience',
@@ -169,9 +181,9 @@ export class LearningEngine {
   /**
    * Get top knowledge for an agent (for prompt injection)
    */
-  async getTopKnowledge(agentId: string, limit = 20): Promise<string[]> {
-    const knowledge = await db.agentKnowledge.findMany({
-      where: { agentId, confidence: { gte: 0.4 } },
+  async getTopKnowledge(agentId: string, companyId: string, limit = 20): Promise<string[]> {
+    const knowledge = await db.agentMemory.findMany({
+      where: { agentId, companyId, confidence: { gte: 0.4 } },
       orderBy: [{ confidence: 'desc' }, { useCount: 'desc' }],
       take: limit,
       select: { content: true, category: true, confidence: true },
@@ -182,12 +194,14 @@ export class LearningEngine {
   /**
    * Reinforce knowledge after successful reuse
    */
-  async reinforceKnowledge(knowledgeId: string, success: boolean): Promise<void> {
+  async reinforceKnowledge(knowledgeId: string, companyId: string, success: boolean): Promise<void> {
+    const existing = await db.agentMemory.findFirst({ where: { id: knowledgeId, companyId } })
+    if (!existing) throw new Error('Knowledge entry not found for this company')
     const update = success
       ? { useCount: { increment: 1 }, successCount: { increment: 1 } }
       : { useCount: { increment: 1 }, failCount: { increment: 1 } };
 
-    const knowledge = await db.agentKnowledge.update({ where: { id: knowledgeId }, data: update });
+    const knowledge = await db.agentMemory.update({ where: { id: existing.id }, data: update });
 
     // Recalculate confidence based on success rate
     const total = knowledge.useCount || 1;
@@ -198,7 +212,7 @@ export class LearningEngine {
     const daysSinceCreation = (Date.now() - knowledge.createdAt.getTime()) / (1000 * 60 * 60 * 24);
     const temperature = daysSinceCreation < 1 ? 'hot' : daysSinceCreation < 7 ? 'warm' : 'cold';
 
-    await db.agentKnowledge.update({
+    await db.agentMemory.update({
       where: { id: knowledgeId },
       data: { confidence: newConfidence, temperature, updatedAt: new Date() },
     });
@@ -285,6 +299,7 @@ export class LearningEngine {
     const session = await db.agentLearningSession.create({
       data: {
         agentId: input.agentId,
+        companyId: input.companyId,
         agentRunId: input.agentRunId,
         triggerType: input.triggerType,
         triggerDetail: input.triggerDetail,

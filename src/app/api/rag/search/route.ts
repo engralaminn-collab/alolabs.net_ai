@@ -1,57 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
+import { requireCompanyAuth } from '@/lib/api-auth'
 import { hybridSearch } from '@/lib/rag-engine'
 
+const SearchSchema = z.object({
+  query: z.string().trim().min(1).max(50_000),
+  collectionId: z.string().min(1).optional(),
+  collectionName: z.string().min(1).optional(),
+  limit: z.number().int().min(1).max(50).optional(),
+  vectorWeight: z.number().finite().min(0).max(1).optional(),
+  keywordWeight: z.number().finite().min(0).max(1).optional(),
+})
+
 export async function POST(request: NextRequest) {
-  // Auth check
-  const authHeader = request.headers.get('authorization');
-  const token = authHeader?.replace('Bearer ', '');
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const { verifySessionToken } = await import('@/lib/auth');
-  const session = await verifySessionToken(token);
-  if (!session) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
   try {
-    const body = await request.json()
-    const {
-      query,
-      collectionId,
-      collectionName,
-      companyId,
-      limit,
-      vectorWeight,
-      keywordWeight,
-    } = body
-
-    if (!query || typeof query !== 'string' || query.trim().length === 0) {
-      return NextResponse.json(
-        { error: 'query is required and must be a non-empty string' },
-        { status: 400 }
-      )
+    const user = await requireCompanyAuth()
+    const parsed = SearchSchema.safeParse(await request.json())
+    if (!parsed.success) {
+      return NextResponse.json({ success: false, error: parsed.error.flatten() }, { status: 400 })
     }
 
-    // If collectionName is not provided but collectionId is, look up the collection name
-    let resolvedCollectionName = collectionName
-    if (!resolvedCollectionName && collectionId) {
-      const { db } = await import('@/lib/db')
-      const collection = await db.ragCollection.findUnique({
-        where: { id: collectionId },
-        select: { name: true },
-      })
-      resolvedCollectionName = collection?.name || undefined
-    }
-
-    const result = await hybridSearch(query.trim(), {
-      collectionId: collectionId || undefined,
-      collectionName: resolvedCollectionName || undefined,
-      companyId: companyId || undefined,
-      limit: limit || undefined,
-      vectorWeight: vectorWeight || undefined,
-      keywordWeight: keywordWeight || undefined,
+    const result = await hybridSearch(parsed.data.query, {
+      companyId: user.companyId,
+      userId: user.userId,
+      ...(parsed.data.collectionId ? { collectionId: parsed.data.collectionId } : {}),
+      ...(parsed.data.collectionName ? { collectionName: parsed.data.collectionName } : {}),
+      ...(parsed.data.limit ? { limit: parsed.data.limit } : {}),
+      ...(typeof parsed.data.vectorWeight === 'number' ? { vectorWeight: parsed.data.vectorWeight } : {}),
+      ...(typeof parsed.data.keywordWeight === 'number' ? { keywordWeight: parsed.data.keywordWeight } : {}),
     })
-
-    return NextResponse.json(result, { status: 200 })
+    return NextResponse.json({ success: true, data: result })
   } catch (error) {
-    console.error('[RAG Search] Error:', error)
-    const message = error instanceof Error ? error.message : 'Failed to perform hybrid search'
-    return NextResponse.json({ error: message }, { status: 500 })
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    const status = message === 'Unauthorized' ? 401 : message === 'Forbidden' ? 403 : 500
+    return NextResponse.json({ success: false, error: message }, { status })
   }
 }

@@ -230,10 +230,9 @@ export async function submitProposal(proposal: EvolutionProposal): Promise<{
       await db.agentVersion.create({
         data: {
           agentId: newAgent.id,
-          version: '1.0.0',
-          changelog: `Initial evolution from parent ${proposal.parentAgentName} (${proposal.parentAgentId}): ${proposal.reason}`,
-          configuration: JSON.stringify(newAgent),
-          createdBy: proposal.parentAgentId,
+          version: 1,
+          changeLog: `Initial evolution from parent ${proposal.parentAgentName} (${proposal.parentAgentId}): ${proposal.reason}`,
+          config: JSON.stringify(newAgent),
         },
       })
     } catch {

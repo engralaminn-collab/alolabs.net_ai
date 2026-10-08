@@ -2,11 +2,9 @@
  * Comprehensive MySQL Schema & Compatibility Verification
  * ALO Labs AI-EOS
  *
- * Verifies:
- * 1. All 137 Prisma models exist in MySQL schema
- * 2. 0 index / unique collisions on @db.LongText columns
- * 3. Critical content, prompt, and JSON fields mapped to @db.LongText
- * 4. Case-sensitivity compatibility for Settings keys
+ * Verifies the MySQL Prisma schema's indexed and relation scalar field types,
+ * plus selected content fields that must use @db.LongText. This is a static
+ * schema check; it does not connect to or inspect a live MySQL database.
  */
 
 import fs from 'fs';
@@ -16,6 +14,7 @@ export interface VerificationResult {
   totalModels: number;
   totalIndexes: number;
   indexCollisions: number;
+  relationFieldCollisions: number;
   criticalFieldsVerified: number;
   criticalFieldsPassed: boolean;
   errors: string[];
@@ -32,14 +31,17 @@ export function verifyCompatibility(sqlitePath?: string): VerificationResult {
 
   let currentModel = '';
   const modelIndexes = new Map<string, Set<string>>();
+  const modelRelationFields = new Map<string, Set<string>>();
   const modelFields = new Map<string, Map<string, string>>();
   const errors: string[] = [];
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed.startsWith('model ')) {
-      currentModel = trimmed.split(/\s+/)[1];
+    const modelMatch = trimmed.match(/^model\s+(\w+)\s*\{$/);
+    if (modelMatch) {
+      currentModel = modelMatch[1];
       modelIndexes.set(currentModel, new Set());
+      modelRelationFields.set(currentModel, new Set());
       modelFields.set(currentModel, new Map());
       continue;
     }
@@ -57,6 +59,14 @@ export function verifyCompatibility(sqlitePath?: string): VerificationResult {
       const fieldList = indexMatch[1].split(',').map((f) => f.trim().split(/\s+/)[0]);
       for (const f of fieldList) {
         modelIndexes.get(currentModel)?.add(f);
+      }
+    }
+
+    const relationMatch = trimmed.match(/@relation\([^)]*fields:\s*\[([^\]]+)\]/);
+    if (relationMatch) {
+      const relationFields = relationMatch[1].split(',').map((field) => field.trim());
+      for (const field of relationFields) {
+        modelRelationFields.get(currentModel)?.add(field);
       }
     }
 
@@ -84,6 +94,19 @@ export function verifyCompatibility(sqlitePath?: string): VerificationResult {
       if (fieldDef.includes('@db.LongText')) {
         indexCollisions++;
         errors.push(`Index collision in model ${model}.${idxField}: Indexed field cannot be @db.LongText`);
+      }
+    }
+  }
+
+  // Relation scalar fields become foreign keys and must remain VARCHAR-compatible.
+  let relationFieldCollisions = 0;
+  for (const [model, relationFields] of modelRelationFields.entries()) {
+    const fields = modelFields.get(model);
+    for (const relationField of relationFields) {
+      const fieldDef = fields?.get(relationField) || '';
+      if (fieldDef.includes('@db.LongText')) {
+        relationFieldCollisions++;
+        errors.push(`Relation field collision in model ${model}.${relationField}: Foreign-key fields cannot be @db.LongText`);
       }
     }
   }
@@ -119,6 +142,7 @@ export function verifyCompatibility(sqlitePath?: string): VerificationResult {
     totalModels: modelFields.size,
     totalIndexes,
     indexCollisions,
+    relationFieldCollisions,
     criticalFieldsVerified,
     criticalFieldsPassed,
     errors,
@@ -130,6 +154,7 @@ export function verifyCompatibility(sqlitePath?: string): VerificationResult {
   console.log(`Total Models:            ${result.totalModels}`);
   console.log(`Total Indexed Fields:    ${result.totalIndexes}`);
   console.log(`Index Collisions:        ${result.indexCollisions} (Must be 0)`);
+  console.log(`Relation Field Collisions: ${result.relationFieldCollisions} (Must be 0)`);
   console.log(`Critical Fields Checked: ${result.criticalFieldsVerified}`);
   console.log(`Critical Fields Safe:    ${result.criticalFieldsPassed ? 'YES' : 'NO'}`);
   console.log(`Status:                  ${result.errors.length === 0 ? 'PASS' : 'FAIL'}`);

@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
     const workflows = await db.workflow.findMany({
       where,
       include: {
-        steps: { orderBy: { stepNumber: 'asc' } },
+        workflowSteps: { orderBy: { stepNumber: 'asc' } },
         _count: { select: { runs: true, tasks: true } },
       },
       orderBy: { createdAt: 'desc' },
@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
     const mapped = workflows.map(w => {
       const stats = runMap[w.id]
       const successCount = successMap[w.id] || 0
-      const totalRuns = stats?._count?.id || w._count.runs
+      const totalRuns = stats?._count.id ?? w._count.runs
       return {
         id: w.id,
         name: w.name,
@@ -63,13 +63,13 @@ export async function GET(request: NextRequest) {
           : w.slug.includes('compliance') ? 'compliance'
           : 'monitoring',
         status: w.status,
-        steps: w.steps.map(s => ({
-          id: s.id,
-          name: `Step ${s.stepNumber}: ${s.action}`,
-          status: 'completed' as const, // Default — real status would come from runtime
+        steps: w.workflowSteps.map((step) => ({
+          id: step.id,
+          name: `Step ${step.stepNumber}: ${step.action}`,
+          status: 'pending' as const,
         })),
         successRate: totalRuns > 0 ? Math.round((successCount / totalRuns) * 100) : 0,
-        avgDuration: stats?._avg?.durationMs ? Math.round(stats._avg.durationMs / 1000) : 0,
+        avgDuration: stats?._avg.durationMs == null ? 0 : Math.round(stats._avg.durationMs / 1000),
         runsCount: totalRuns,
         createdAt: w.createdAt.toISOString(),
       }
@@ -88,7 +88,7 @@ export async function GET(request: NextRequest) {
     ])
     const overallSuccessRate = totalRuns > 0 ? Number(((totalSuccessRuns / totalRuns) * 100).toFixed(1)) : 0
     const overallAvgDuration = totalRuns > 0
-      ? Math.round((await db.workflowRun.aggregate({ _avg: { durationMs: true } }))._avg.durationMs / 1000) || 0
+      ? Math.round(((await db.workflowRun.aggregate({ _avg: { durationMs: true } }))._avg.durationMs ?? 0) / 1000)
       : 0
 
     return NextResponse.json({

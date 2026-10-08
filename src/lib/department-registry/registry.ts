@@ -2219,7 +2219,7 @@ export class DepartmentRegistryImpl implements DepartmentRegistry {
       ...dept.managerAgentIds,
       ...dept.specialistAgentIds,
       ...dept.workerAgentIds,
-    ].filter(Boolean);
+    ].filter((agentId): agentId is string => typeof agentId === 'string' && agentId.length > 0);
     for (const agentId of allAgentIds) {
       this.agentIndex.set(agentId, dept.departmentId);
     }
@@ -2253,7 +2253,7 @@ export class DepartmentRegistryImpl implements DepartmentRegistry {
       ...existing.managerAgentIds,
       ...existing.specialistAgentIds,
       ...existing.workerAgentIds,
-    ].filter(Boolean);
+    ].filter((agentId): agentId is string => typeof agentId === 'string' && agentId.length > 0);
     for (const agentId of oldAgentIds) {
       this.agentIndex.delete(agentId);
     }
@@ -2268,7 +2268,7 @@ export class DepartmentRegistryImpl implements DepartmentRegistry {
       ...updated.managerAgentIds,
       ...updated.specialistAgentIds,
       ...updated.workerAgentIds,
-    ].filter(Boolean);
+    ].filter((agentId): agentId is string => typeof agentId === 'string' && agentId.length > 0);
     for (const agentId of newAgentIds) {
       this.agentIndex.set(agentId, id);
     }
