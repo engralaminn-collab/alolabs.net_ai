@@ -2,10 +2,54 @@
  * Agent Health Monitor
  * Tracks execution metrics and computes health scores for each agent.
  * Uses hybrid in-memory cache + DB persistence for crash recovery.
+ *
+ * Identity model
+ * ──────────────
+ * Callers (the runtime, APIs) address agents by their business key
+ * `Agent.agentId` (e.g. "ceo-agent"). The database rows `AgentHealth.agentId`
+ * and `AgentRun.agentId` are foreign keys to the primary key `Agent.id`
+ * (a cuid). Before 2026-10 this module wrote the business key straight into
+ * the FK column, which produced orphan AgentHealth rows that referenced no
+ * Agent. Every DB access now goes through `resolveAgent()`, which maps either
+ * identifier to the canonical pair and refuses to persist for unknown agents.
  */
 
 import { db } from '@/lib/db';
 import type { AgentHealthSnapshot } from './types';
+
+export interface ResolvedAgentIdentity {
+  /** Primary key (Agent.id) — what FK columns must contain. */
+  id: string;
+  /** Business key (Agent.agentId) — what callers use. */
+  agentId: string;
+}
+
+const identityCache = new Map<string, ResolvedAgentIdentity | null>();
+
+/**
+ * Resolve an agent by business key OR primary key. Results (including misses)
+ * are cached per process; call `clearAgentIdentityCache()` after renaming or
+ * deleting agents in tests.
+ */
+export async function resolveAgent(key: string): Promise<ResolvedAgentIdentity | null> {
+  if (!key) return null;
+  if (identityCache.has(key)) return identityCache.get(key) ?? null;
+  const agent = await db.agent.findFirst({
+    where: { OR: [{ agentId: key }, { id: key }] },
+    select: { id: true, agentId: true },
+  });
+  const resolved = agent ? { id: agent.id, agentId: agent.agentId } : null;
+  identityCache.set(key, resolved);
+  if (resolved) {
+    identityCache.set(resolved.id, resolved);
+    identityCache.set(resolved.agentId, resolved);
+  }
+  return resolved;
+}
+
+export function clearAgentIdentityCache(): void {
+  identityCache.clear();
+}
 
 interface HealthRecord {
   agentId: string;
@@ -100,13 +144,13 @@ export class AgentHealthMonitor {
   /** Record a successful execution */
   recordSuccess(agentId: string, latencyMs: number): void {
     this.store.recordSuccess(agentId, latencyMs);
-    this.upsertAgentHealthDB(agentId);
+    void this.upsertAgentHealthDB(agentId);
   }
 
   /** Record a failed execution */
   recordFailure(agentId: string, latencyMs: number, error?: string): void {
     this.store.recordFailure(agentId, latencyMs, error);
-    this.upsertAgentHealthDB(agentId);
+    void this.upsertAgentHealthDB(agentId);
   }
 
   /** Get health snapshot for a specific agent */
@@ -162,12 +206,20 @@ export class AgentHealthMonitor {
         orderBy: { checkedAt: 'desc' },
       });
 
-      // Deduplicate by agentId (keep latest per agent)
+      // Deduplicate by agent (keep latest per agent). Rows are keyed by the
+      // business agentId; rows whose FK does not resolve to an Agent are
+      // reported (never silently used) — scripts/db-integrity-audit.ts repairs them.
       const byAgent = new Map<string, typeof healthRows[0]>();
+      let unresolved = 0;
       for (const row of healthRows) {
-        if (!byAgent.has(row.agentId)) {
-          byAgent.set(row.agentId, row);
+        const identity = await resolveAgent(row.agentId);
+        if (!identity) { unresolved += 1; continue; }
+        if (!byAgent.has(identity.agentId)) {
+          byAgent.set(identity.agentId, row);
         }
+      }
+      if (unresolved > 0) {
+        console.warn(`[HealthMonitor] ${unresolved} AgentHealth row(s) reference no Agent; run scripts/db-integrity-audit.ts`);
       }
 
       // For each agent with an AgentHealth record, supplement with AgentRun data
@@ -179,9 +231,11 @@ export class AgentHealthMonitor {
       const agentsWithRuns = await db.agentRun.groupBy({
         by: ['agentId'],
       });
-      for (const { agentId } of agentsWithRuns) {
-        if (!byAgent.has(agentId)) {
-          await this.loadHealthFromDB(agentId);
+      for (const { agentId: runAgentKey } of agentsWithRuns) {
+        const identity = await resolveAgent(runAgentKey);
+        if (!identity) continue;
+        if (!byAgent.has(identity.agentId)) {
+          await this.loadHealthFromDB(identity.agentId);
         }
       }
 
@@ -251,15 +305,19 @@ export class AgentHealthMonitor {
     healthRow?: { consecutiveFailures: number; status: string; lastHeartbeat: Date } | null,
   ): Promise<void> {
     try {
+      // AgentRun.agentId holds Agent.id; translate the business key first.
+      const identity = await resolveAgent(agentId);
       // Fetch the last 100 completed runs for this agent to reconstruct metrics
-      const runs = await db.agentRun.findMany({
-        where: {
-          agentId,
-          status: { in: ['completed', 'failed', 'timed_out'] },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 100,
-      });
+      const runs = identity
+        ? await db.agentRun.findMany({
+            where: {
+              agentId: identity.id,
+              status: { in: ['completed', 'failed', 'timed_out'] },
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 100,
+          })
+        : [];
 
       if (runs.length === 0 && !healthRow) {
         this.store.markLoaded(agentId);
@@ -345,9 +403,9 @@ export class AgentHealthMonitor {
    * Upsert the AgentHealth DB row for an agent.
    * This is fire-and-forget (errors logged, not thrown).
    */
-  private upsertAgentHealthDB(agentId: string): void {
+  private upsertAgentHealthDB(agentId: string): Promise<void> {
     const rec = this.store.get(agentId);
-    if (!rec) return;
+    if (!rec) return Promise.resolve();
 
     const status = rec.consecutiveFailures >= 5
       ? 'failed'
@@ -355,26 +413,36 @@ export class AgentHealthMonitor {
         ? 'degraded'
         : 'healthy';
 
-    // Fire-and-forget — don't block the caller
-    db.agentHealth.upsert({
-      where: { id: `health-${agentId}` },
-      update: {
-        status,
-        consecutiveFailures: rec.consecutiveFailures,
-        lastHeartbeat: rec.lastExecutionAt ?? new Date(),
-        checkedAt: new Date(),
-      },
-      create: {
-        id: `health-${agentId}`,
-        agentId,
-        status,
-        consecutiveFailures: rec.consecutiveFailures,
-        lastHeartbeat: rec.lastExecutionAt ?? new Date(),
-        checkedAt: new Date(),
-      },
-    }).catch((err: unknown) => {
-      console.warn(`[HealthMonitor] Failed to upsert AgentHealth for ${agentId}:`, err);
-    });
+    // Fire-and-forget — don't block the caller. The FK column must hold
+    // Agent.id, so the business key is resolved first; unknown agents are
+    // never persisted (that is how orphan rows were created before).
+    return resolveAgent(agentId)
+      .then((identity) => {
+        if (!identity) {
+          console.warn(`[HealthMonitor] Not persisting health for unknown agent "${agentId}"`);
+          return;
+        }
+        return db.agentHealth.upsert({
+          where: { id: `health-${identity.id}` },
+          update: {
+            status,
+            consecutiveFailures: rec.consecutiveFailures,
+            lastHeartbeat: rec.lastExecutionAt ?? new Date(),
+            checkedAt: new Date(),
+          },
+          create: {
+            id: `health-${identity.id}`,
+            agentId: identity.id,
+            status,
+            consecutiveFailures: rec.consecutiveFailures,
+            lastHeartbeat: rec.lastExecutionAt ?? new Date(),
+            checkedAt: new Date(),
+          },
+        }).then(() => undefined);
+      })
+      .catch((err: unknown) => {
+        console.warn(`[HealthMonitor] Failed to upsert AgentHealth for ${agentId}:`, err);
+      });
   }
 }
 
