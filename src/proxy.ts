@@ -206,7 +206,9 @@ export function proxy(request: NextRequest) {
   const response = NextResponse.next();
   response.headers.set('X-Request-Id', crypto.randomUUID());
   response.headers.set('X-Content-Type-Options', 'nosniff');
-  response.headers.set('X-Frame-Options', 'DENY');
+  // The dev preview embeds the app in the sandbox frame; every other
+  // environment keeps the full framing lockdown.
+  response.headers.set('X-Frame-Options', process.env.NODE_ENV === 'development' ? 'SAMEORIGIN' : 'DENY');
   response.headers.set('X-XSS-Protection', '1; mode=block');
   response.headers.set('Strict-Transport-Security', 'max-age=31536000');
   response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
