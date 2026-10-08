@@ -27,11 +27,11 @@ const buttonVariants = cva(
         editorial:
           "border border-[#2d3142] bg-[#2d3142] text-[#f5f5f5] hover:bg-[#3b4058] focus-visible:ring-[#eb6c36]/40 dark:border-[#f5f5f5] dark:bg-[#f5f5f5] dark:text-[#2d3142] dark:hover:bg-[#e2e2e2]",
         editorialOutline:
-          "border border-[#2d3142] bg-transparent text-[#2d3142] hover:bg-[#2d3142]/05 focus-visible:ring-[#eb6c36]/40 dark:border-[#f5f5f5] dark:text-[#f5f5f5] dark:hover:bg-white/10",
+          "border border-[#2d3142] bg-transparent text-[#2d3142] hover:bg-[#2d3142]/5 focus-visible:ring-[#eb6c36]/40 dark:border-[#f5f5f5] dark:text-[#f5f5f5] dark:hover:bg-white/10",
         editorialAccent:
           "border border-[#eb6c36] bg-[#eb6c36]/10 text-[#2d3142] hover:bg-[#eb6c36]/20 focus-visible:ring-[#eb6c36]/40 dark:border-[#f08a59] dark:bg-[#f08a59]/12 dark:text-[#f5f5f5] dark:hover:bg-[#f08a59]/20",
         editorialGhost:
-          "text-[#4f5d75] hover:bg-[#2d3142]/05 hover:text-[#2d3142] dark:text-[#bfc0c0] dark:hover:bg-white/10 dark:hover:text-[#f5f5f5]",
+          "text-[#4f5d75] hover:bg-[#2d3142]/5 hover:text-[#2d3142] dark:text-[#bfc0c0] dark:hover:bg-white/10 dark:hover:text-[#f5f5f5]",
         technical:
           "border border-[#2d3142]/20 bg-transparent font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-[#4f5d75] hover:border-[#eb6c36]/60 hover:text-[#2d3142] focus-visible:ring-[#eb6c36]/40 dark:border-white/20 dark:text-[#bfc0c0] dark:hover:border-[#f08a59]/70 dark:hover:text-[#f5f5f5]",
       },

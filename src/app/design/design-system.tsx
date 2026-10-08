@@ -10,15 +10,21 @@
 
 import * as React from 'react'
 import { DiagramStudio } from '@/components/diagrams/diagram-studio'
+import { MotionSection } from './motion-section'
+import { IconsSection } from './icons-section'
+import { DiagramImport } from '@/components/diagrams/diagram-import'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { AL0Note } from './alo-note'
 import { KINDS, RADIUS, STROKE, TOKENS, NODE_TREATMENT_PREVIEW, TYPE_RAMP_PREVIEW } from './design-tokens'
 
-type Tab = 'diagrams' | 'buttons' | 'cards' | 'tokens'
+type Tab = 'diagrams' | 'motion' | 'icons' | 'import' | 'buttons' | 'cards' | 'tokens'
 
 const TABS: { id: Tab; label: string; hint: string }[] = [
   { id: 'diagrams', label: 'Diagrams', hint: '44 visual types, three variants' },
+  { id: 'motion', label: 'Motion', hint: 'Step, reveal and loop playback' },
+  { id: 'icons', label: 'Icons', hint: '87 monochrome and brand icons' },
+  { id: 'import', label: 'Import', hint: 'Mermaid, draw.io, Excalidraw' },
   { id: 'buttons', label: 'Buttons', hint: 'Borders in, shadows out' },
   { id: 'cards', label: 'Cards', hint: 'Varied widths, not three clones' },
   { id: 'tokens', label: 'Tokens', hint: 'Semantic roles and type ramp' },
@@ -91,6 +97,9 @@ export default function DesignSystemPage() {
 
       <main className="mx-auto max-w-[1400px] px-6 py-10">
         {tab === 'diagrams' && <DiagramStudio />}
+        {tab === 'motion' && <MotionSection />}
+        {tab === 'icons' && <IconsSection />}
+        {tab === 'import' && <DiagramImport />}
         {tab === 'buttons' && <ButtonsSection />}
         {tab === 'cards' && <CardsSection />}
         {tab === 'tokens' && <TokensSection />}

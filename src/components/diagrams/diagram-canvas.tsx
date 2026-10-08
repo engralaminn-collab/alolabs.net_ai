@@ -9,27 +9,79 @@
  * The three arrow markers are always defined, exactly as the templates do.
  */
 
+import { iconMarkup } from '@/lib/diagram-design/icons'
 import * as React from 'react'
 import { FONT_STACK, RADIUS, STROKE, alpha, nodeTreatment, resolveSkin } from '@/lib/diagram-design/tokens'
 import type { LegendItem, Prim, Scene } from '@/lib/diagram-design/spec'
 import type { NodeKind } from '@/lib/diagram-design/tokens'
+import { MOTION_CLOCK } from '@/lib/diagram-design/motion'
+
+/**
+ * Playback view handed down by the motion controller. Absent for static figures,
+ * in which case the canvas output is byte-identical to the non-motion render.
+ */
+export interface MotionView {
+  /** 1-based step that reveals an item, or null when it is always visible. */
+  stepOf: (id: string | undefined) => number | null
+  /** Whether an item is visible at the current step. */
+  isVisible: (id: string | undefined) => boolean
+  /** Current step, used to mark the active item for styling. */
+  current: number
+  /** Draw one decorative flow token along the focal connector (loop mode). */
+  loopToken?: boolean
+}
 
 export interface DiagramCanvasProps {
   scene: Scene
   className?: string
   /** Hide the legend strip (the figure sits inside a card that already explains it). */
   hideLegend?: boolean
+  /** Step-gated playback view; see `MotionView`. */
+  motion?: MotionView
+  /** Hand-drawn displacement applied to shapes only (primitive-sketchy.md). */
+  sketchy?: boolean
 }
 
-export function DiagramCanvas({ scene, className, hideLegend }: DiagramCanvasProps): React.ReactElement {
+export function DiagramCanvas({ scene, className, hideLegend, motion, sketchy }: DiagramCanvasProps): React.ReactElement {
   const uid = React.useCallback((name: string) => `${scene.aria.slug}-${name}`, [scene.aria.slug])
   const t = scene.theme
+  // Masks must match the page behind them: paper for light/dark, the fixed terminal paper for the terminal skin.
+  const maskFill = scene.skin === 'terminal' ? '#141414' : scene.theme === 'dark' ? '#232734' : '#f5f5f5'
   const items = React.useMemo(
     () => [...scene.items].sort((a, b) => a.layer - b.layer),
     [scene.items],
   )
   const legendItems = hideLegend ? [] : scene.legend
   const height = scene.height + (legendItems.length ? 44 : 0)
+
+  const renderItem = (item: (typeof items)[number], i: number) => {
+    const node = <Primitive key={item.id ?? `${item.layer}-${i}`} prim={item.prim} uid={uid} maskFill={maskFill} />
+    if (!motion) return node
+    const key = item.group ?? item.id
+    const step = motion.stepOf(key)
+    if (step === null) return node
+    const visible = motion.isVisible(key)
+    return (
+      <g
+        key={item.id ?? `${item.layer}-${i}`}
+        data-motion-item=""
+        data-step={step}
+        data-current={step === motion.current ? 'true' : undefined}
+        data-visible={visible ? 'true' : 'false'}
+        aria-hidden={visible ? undefined : true}
+        style={{ opacity: visible ? 1 : 0, transition: 'opacity var(--motion-step, 480ms) cubic-bezier(.2,.8,.2,1)' }}
+      >
+        <Primitive prim={item.prim} uid={uid} maskFill={maskFill} />
+      </g>
+    )
+  }
+
+  // Sketchy: displacement on shapes only. Text sits in its own unfiltered group so labels stay crisp.
+  const shapeItems = sketchy ? items.filter((it) => it.prim.t !== 'text') : []
+  const textItems = sketchy ? items.filter((it) => it.prim.t === 'text') : []
+
+  // Loop mode: one decorative token on the focal connector, hidden from assistive tech.
+  const loopPath = motion?.loopToken ? focalPath(items) : undefined
 
   return (
     <div
@@ -69,14 +121,39 @@ export function DiagramCanvas({ scene, className, hideLegend }: DiagramCanvasPro
           <rect width={scene.width} height={height} fill={`url(#${uid('dots')})`} />
         ) : null}
 
-        {items.map((item, i) => (
-          <Primitive key={item.id ?? `${item.layer}-${i}`} prim={item.prim} uid={uid} theme={t} />
-        ))}
+        {sketchy ? (
+          <>
+            <defs>
+              <filter id={uid('sketchy')} x="-2%" y="-2%" width="104%" height="104%">
+                <feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="2" seed="4" />
+                <feDisplacementMap in="SourceGraphic" scale="1.5" />
+              </filter>
+            </defs>
+            <g filter={`url(#${uid('sketchy')})`}>{shapeItems.map(renderItem)}</g>
+            {textItems.map(renderItem)}
+          </>
+        ) : (
+          items.map(renderItem)
+        )}
+
+        {loopPath ? (
+          <circle className="dd-flow-token" aria-hidden="true" focusable="false" r="5" fill={t === 'dark' ? '#f08a59' : '#eb6c36'}>
+            <animateMotion dur={`${MOTION_CLOCK.loopCycle}ms`} repeatCount="indefinite" path={loopPath} />
+          </circle>
+        ) : null}
 
         {legendItems.length ? <LegendStrip scene={scene} items={legendItems} y={scene.height + 8} uid={uid} /> : null}
       </svg>
     </div>
   )
+}
+
+/** The focal connector: the first accent-marked path, else the first path. */
+function focalPath(items: Scene['items']): string | undefined {
+  const paths = items.filter((it) => it.prim.t === 'path')
+  const accent = paths.find((it) => it.prim.t === 'path' && it.prim.marker === 'accent')
+  const pick = accent ?? paths[0]
+  return pick && pick.prim.t === 'path' ? pick.prim.d : undefined
 }
 
 function ArrowMarker({ id, fill }: { id: string; fill: string }) {
@@ -87,7 +164,7 @@ function ArrowMarker({ id, fill }: { id: string; fill: string }) {
   )
 }
 
-function Primitive({ prim, uid, theme }: { prim: Prim; uid: (n: string) => string; theme: 'light' | 'dark' }) {
+function Primitive({ prim, uid, maskFill }: { prim: Prim; uid: (n: string) => string; maskFill: string }) {
   switch (prim.t) {
     case 'rect':
       return (
@@ -104,6 +181,14 @@ function Primitive({ prim, uid, theme }: { prim: Prim; uid: (n: string) => strin
           opacity={prim.opacity}
         />
       )
+    case 'icon':
+      // Trusted markup from icons.generated.ts only; the name is looked up in the allowlist.
+      return (
+        <g
+          style={{ color: prim.color }}
+          dangerouslySetInnerHTML={{ __html: iconMarkup(prim.name, prim.x, prim.y, prim.size) }}
+        />
+      )
     case 'mask':
       // Opaque paper backing — the same value as the page background.
       return (
@@ -113,7 +198,7 @@ function Primitive({ prim, uid, theme }: { prim: Prim; uid: (n: string) => strin
           width={prim.w}
           height={prim.h}
           rx={prim.rx ?? 0}
-          fill={theme === 'dark' ? '#232734' : '#f5f5f5'}
+          fill={maskFill}
         />
       )
     case 'path':

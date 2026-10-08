@@ -150,13 +150,20 @@ export function renderDiagram(spec: DiagramSpec): Scene {
 
   // Editorial callouts — italic serif asides, max 2.
   const callouts = (spec.callouts ?? []).slice(0, 2)
+  const leaders: { from: { x: number; y: number }; target: string }[] = []
   callouts.forEach((note, i) => {
     const x = note.at === 'start' ? 40 : note.at === 'end' ? size.w - 40 : size.w / 2
     const anchor = note.at === 'start' ? 'start' : note.at === 'end' ? 'end' : 'middle'
-    b.callout(x, size.h - 12 - i * 24, note.text, { anchor })
+    const y = size.h - 12 - i * 24
+    b.callout(x, y, note.text, { anchor, rule: !note.target })
+    if (note.target) {
+      // Leader starts just above the note's text, near its anchor edge.
+      const fx = anchor === 'start' ? x + 12 : anchor === 'end' ? x - 12 : x
+      leaders.push({ from: { x: fx, y: y - 14 }, target: note.target })
+    }
   })
 
-  return finish(b, spec)
+  return finish(b, spec, leaders)
 }
 
 /**
@@ -213,7 +220,18 @@ function renderSwimlane(spec: DiagramSpec, b: SceneBuilder) {
   ])
 }
 
-function finish(b: SceneBuilder, spec: DiagramSpec): Scene {
+function finish(
+  b: SceneBuilder,
+  spec: DiagramSpec,
+  leaders: { from: { x: number; y: number }; target: string }[] = [],
+): Scene {
+  // Leaders need the target node's box, which only exists once the scene is built.
+  for (const l of leaders) {
+    const box = b.peekItems().find((i) => i.id === l.target && i.prim.t === 'rect')
+    if (!box || box.prim.t !== 'rect') continue
+    const to = { x: box.prim.x + box.prim.w / 2, y: box.prim.y + box.prim.h + 3 }
+    b.leader(l.from, to)
+  }
   const scene = b.build()
   scene.audit = auditScene(scene, spec)
   return scene
