@@ -20,6 +20,8 @@ import { AloLabsLogo, Mark } from '@/components/brand/alo-logo'
 // ─── Types ────────────────────────────────────────────────────────────────────
 export type EnterpriseView =
   | 'agent-command-center'
+  | 'agentos-command'
+  | 'agentos-runs'
   | 'enterprise-overview'
   | 'department-hub'
   | 'ai-employees'
@@ -102,6 +104,8 @@ const navGroups: NavGroup[] = [
   {
     label: 'Command Center',
     items: [
+      { id: 'agentos-command' as EnterpriseView, name: 'Command Center', icon: Zap },
+      { id: 'agentos-runs' as EnterpriseView, name: 'Runs', icon: Activity },
       { id: 'agent-command-center' as EnterpriseView, name: 'Agent Command Center', icon: Brain },
       { id: 'enterprise-overview', name: 'Enterprise Overview', icon: LayoutDashboard },
     ],
@@ -181,6 +185,8 @@ const navGroups: NavGroup[] = [
 
 // ─── Lazy Panel Map ────────────────────────────────────────────────────────────
 const panelMap: Record<EnterpriseView, React.LazyExoticComponent<React.ComponentType<{ onNavigate?: (view: EnterpriseView) => void }>>> = {
+  'agentos-command': lazy(() => import('./panels/agentos-command')),
+  'agentos-runs': lazy(() => import('./panels/agentos-runs')),
   'agent-command-center': lazy(() => import('./panels/agent-command-center')),
   'enterprise-overview': lazy(() => import('./panels/enterprise-overview')),
   'department-hub': lazy(() => import('./panels/department-hub')),

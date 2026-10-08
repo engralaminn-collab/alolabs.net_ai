@@ -13,6 +13,7 @@ const PUBLIC_API_ROUTES: { path: string; methods: string[] }[] = [
   { path: '/api/health/live', methods: ['GET'] },
   { path: '/api/health/ready', methods: ['GET'] },
   { path: '/api/health', methods: ['GET'] },
+  { path: '/api/v1/health', methods: ['GET'] },   // AgentOS liveness (public)
   { path: '/api/ping', methods: ['GET'] },
   { path: '/api/infra/ping', methods: ['GET'] },
   { path: '/api/enterprise/agents', methods: ['GET'] },   // dashboard
@@ -219,14 +220,17 @@ export function proxy(request: NextRequest) {
   // via requireAuth() from @/lib/api-auth.
   if (isApi && !isPublicApiRoute(pathname, search, method)) {
     const authHeader = request.headers.get('authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    // Versioned API clients may use a company-scoped X-API-Key. The handler
+    // verifies its hash, status, expiry, tenant and scopes; proxy only checks
+    // that credentials are present (as it does for Bearer sessions).
+    const hasV1Key = pathname.startsWith('/api/v1/') && Boolean(request.headers.get('x-api-key')?.trim());
+    if (!hasV1Key && (!authHeader || !authHeader.startsWith('Bearer '))) {
       return NextResponse.json(
         { error: 'Unauthorized', message: 'Missing or invalid Authorization header' },
         { status: 401 },
       );
     }
-    const token = authHeader.substring(7);
-    if (!token) {
+    if (!hasV1Key && !authHeader!.substring(7)) {
       return NextResponse.json(
         { error: 'Unauthorized', message: 'Empty bearer token' },
         { status: 401 },

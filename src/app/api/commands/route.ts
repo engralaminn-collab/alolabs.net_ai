@@ -164,12 +164,38 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    // ── AgentOS: execute the command through the Master Orchestrator ──
+    // The run is durable (AgentOSRun + queue job): planning, task
+    // decomposition, agent routing, execution, QC/repair and artifact
+    // assembly all happen asynchronously. The command record is updated
+    // by the run pipeline when it finishes.
+    let runId: string | null = null;
+    try {
+      const { createRunFromCommand } = await import('@/lib/runs');
+      const result = await createRunFromCommand(command.id);
+      if (!result?.runId) throw new Error('Command could not be converted to an AgentOS run');
+      runId = result.runId;
+    } catch (execError) {
+      // Do not claim success: the command record exists, but execution did
+      // not start. Mark it blocked so the user sees the true state.
+      console.error('[POST /api/commands] failed to enqueue run:', execError);
+      await db.command.update({ where: { id: command.id }, data: { status: 'blocked', result: 'Execution unavailable: unable to enqueue AgentOS run.' } });
+      return NextResponse.json({
+        error: 'Execution unavailable: command saved but no run was queued.',
+        commandId: command.id,
+        taskId: task.id,
+        status: 'blocked',
+      }, { status: 503 });
+    }
+
     return NextResponse.json({
       commandId: command.id,
       taskId: task.id,
-      status: command.status,
+      status: 'processing',
       matchedWorkflow,
-    });
+      runId,
+      eventsUrl: runId ? `/api/runs/${runId}/events` : null,
+    }, { status: 202 });
   } catch (error: unknown) {
     if (error instanceof Error && error.message === 'Unauthorized') {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

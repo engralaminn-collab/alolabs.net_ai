@@ -1,3 +1,17 @@
+# AgentOS security status (2026-10-08)
+
+**NOT production-certified.** The legacy security guide below documents intended
+controls across the older product; it is not a completed penetration test.
+The new v1 surface uses session membership or tenant API keys with exact
+resource scopes; new run/project/artifact handlers check company membership.
+Known gaps: legacy-route tenant review, file storage ACLs/metadata, approval
+resume, SSRF/tool injection, prompt-injection resilience and provider secret
+redaction require independent verification. Never give agents admin credentials.
+See the [final audit](../ALO_LABS_AGENTOS_FINAL_AUDIT.md) and
+[deployment guide](DEPLOYMENT_GUIDE.md) for release gates.
+
+---
+
 # ALO Labs Agent Hub — Security Documentation
 
 > **Classification:** Internal — Security Architecture  
