@@ -5,8 +5,8 @@ import { processQueue } from '@/lib/job-queue';
 /**
  * POST /api/queues/[id]/process — trigger manual processing of a queue.
  *
- * Dispatches on `jobType` and executes the appropriate registered handler.
- * If no handler is registered for a job type, the job is acknowledged as completed.
+ * Dispatches on `jobType` through the shared AgentOS dispatcher. Jobs with
+ * no registered executor fail (and retry/dead-letter per queue policy).
  */
 export async function POST(
   request: NextRequest,
@@ -32,18 +32,17 @@ export async function POST(
       return NextResponse.json({ error: 'Queue is not active' }, { status: 400 });
     }
 
+    // Execute jobs with the SAME dispatcher the background worker uses.
+    // Jobs without a registered executor fail explicitly (dead-letter after
+    // retries) instead of being silently acknowledged as completed.
+    const { dispatchAgentOSJob, loadDispatchDeps, AGENTOS_JOB_TYPES } = await import('@/lib/workers/agentos-dispatcher');
+    const deps = await loadDispatchDeps();
     const results = await processQueue(queue.name, async (job) => {
-      // Attempt to dispatch by jobType to a registered handler.
-      // Jobs without a dedicated handler are acknowledged as completed.
-      const payload = job.payload ? JSON.parse(typeof job.payload === 'string' ? job.payload : JSON.stringify(job.payload)) : {};
-      return {
-        processed: true,
-        jobType: job.jobType,
-        jobId: job.id,
-        timestamp: new Date().toISOString(),
-        payload,
-      };
-    });
+      if ((AGENTOS_JOB_TYPES as readonly string[]).includes(job.jobType)) {
+        return dispatchAgentOSJob(job, deps);
+      }
+      throw new Error(`No executor registered for job type '${job.jobType}'`);
+    }, { workerId: `api-${session.userId}` });
 
     const summary = {
       total: results.length,

@@ -170,7 +170,7 @@ export async function runWorkflow(
   if (options.executeInline) {
     void executeWorkflowRun(run.id, workflowRun.id, plan, task.id).catch(() => {});
   } else {
-    await enqueue(RUN_QUEUE, 'agentos.workflow', { runId: run.id, workflowRunId: workflowRun.id, taskId: task.id }, { priority: 10, maxRetries: 2 });
+    await enqueue(RUN_QUEUE, 'agentos.workflow', { runId: run.id, workflowRunId: workflowRun.id, taskId: task.id }, { priority: 10, maxRetries: 2, idempotencyKey: `workflow-run:${workflowRun.id}`, jobId: run.id });
   }
 
   return { workflowRunId: workflowRun.id, runId: run.id, status: 'queued' };

@@ -32,7 +32,6 @@ function resolveJwtSecret(): string {
 }
 
 declare global {
-  // eslint-disable-next-line no-var
   var __aloDevJwtSecret: string | undefined;
 }
 

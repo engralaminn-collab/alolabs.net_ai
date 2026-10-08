@@ -346,7 +346,7 @@ model WorkflowStep {
 
 model Approval {
   id           String    @id @default(cuid())
-  type         String // agent_build, skill_build, workflow_build, tool_approval, paid_api, external_cost, deployment, dns_change, file_delete, public_publish, bulk_whatsapp, real_human_face, voice_clone, legal_final, financial_final, shell_command, new_agent, new_skill, new_workflow
+  type         String // qc_review, agent_build, skill_build, workflow_build, tool_approval, paid_api, external_cost, deployment, dns_change, file_delete, public_publish, bulk_whatsapp, real_human_face, voice_clone, legal_final, financial_final, shell_command, new_agent, new_skill, new_workflow
   title        String
   description  String?
   requestJson  String    @default("{}")

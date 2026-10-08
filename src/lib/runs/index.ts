@@ -15,9 +15,12 @@
  *     → MEMORY      (episodic write-back)
  *     → EVENTS      (RunEvent rows + event bus, for real-time UI)
  *
- * Runs are durable: they live in the DB and are executed by the queue
- * worker, so a server restart never destroys a run (stale jobs are
- * re-queued on boot — see src/instrumentation.ts).
+ * Runs are durable AND resumable: they live in the DB and are executed by
+ * the queue worker. After every step the run persists a checkpoint
+ * (AgentOSRun.checkpoint) so a worker crash/restart re-queues the job and
+ * execution continues from the last completed step instead of repeating
+ * work. A run paused for human review (waiting_approval) is resumed through
+ * resolveRunApproval(), which re-enqueues it once the reviewer decides.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -37,6 +40,7 @@ import {
   MAX_REPAIR_ATTEMPTS,
 } from '@/lib/qc';
 import { buildRunReportArtifact, type ArtifactRecord } from '@/lib/artifacts';
+import { recordOutputVersion, attachQcResult } from '@/lib/qc/output-versions';
 
 export const RUN_QUEUE = 'agentos';
 export const RUN_JOB_TYPE = 'agentos.run';
@@ -52,7 +56,8 @@ export type RunEventType =
   | 'run.queued' | 'run.started' | 'plan.created' | 'task.queued' | 'task.started'
   | 'task.completed' | 'task.failed' | 'task.skipped' | 'agent.selected' | 'model.selected'
   | 'tool.started' | 'tool.completed' | 'qc.passed' | 'qc.failed' | 'repair.started'
-  | 'approval.requested' | 'artifact.created' | 'run.completed' | 'run.failed' | 'run.cancelled';
+  | 'approval.requested' | 'approval.approved' | 'approval.rejected' | 'approval.expired'
+  | 'artifact.created' | 'run.completed' | 'run.failed' | 'run.cancelled' | 'run.resumed' | 'run.paused';
 
 export interface RunEventRecord {
   id: string;
@@ -149,7 +154,7 @@ export async function createRun(input: CreateRunInput): Promise<{ runId: string;
   }
 
   try {
-    await enqueue(RUN_QUEUE, RUN_JOB_TYPE, { runId: run.id }, { priority: 10, maxRetries: 2 });
+    await enqueue(RUN_QUEUE, RUN_JOB_TYPE, { runId: run.id }, { priority: 10, maxRetries: 2, idempotencyKey: `run:${run.id}`, jobId: run.id });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await db.agentOSRun.update({ where: { id: run.id }, data: { status: 'failed', error: `Queue unavailable: ${message}`, completedAt: new Date() } });
@@ -341,6 +346,143 @@ interface StepExecutionOutcome {
   qcScore?: number;
   qcPassed?: boolean;
   repairAttempts: number;
+  /** Set when a human approved the output after QC escalation. */
+  approvedBy?: string;
+  /** Approval that paused the run on this step (if any). */
+  approvalId?: string;
+}
+
+/** Persisted per-step state (AgentOSRun.checkpoint). Outputs are capped. */
+interface RunCheckpoint {
+  version: 1;
+  steps: Record<string, Omit<StepExecutionOutcome, 'step'> & { stepId: string }>;
+  updatedAt: string;
+}
+
+const CHECKPOINT_OUTPUT_CHARS = 8000;
+
+function parseCheckpoint(raw: string | null | undefined): RunCheckpoint {
+  try {
+    const parsed = JSON.parse(raw || '{}') as Partial<RunCheckpoint>;
+    if (parsed && parsed.version === 1 && parsed.steps && typeof parsed.steps === 'object') {
+      return { version: 1, steps: parsed.steps, updatedAt: parsed.updatedAt ?? new Date().toISOString() };
+    }
+  } catch { /* fall through */ }
+  return { version: 1, steps: {}, updatedAt: new Date().toISOString() };
+}
+
+async function saveCheckpoint(runId: string, outcomes: StepExecutionOutcome[]): Promise<void> {
+  const checkpoint: RunCheckpoint = { version: 1, steps: {}, updatedAt: new Date().toISOString() };
+  for (const o of outcomes) {
+    const { step, ...rest } = o;
+    checkpoint.steps[step.id] = {
+      ...rest,
+      stepId: step.id,
+      output: rest.output !== undefined ? rest.output.slice(0, CHECKPOINT_OUTPUT_CHARS) : undefined,
+    };
+  }
+  await db.agentOSRun.update({ where: { id: runId }, data: { checkpoint: JSON.stringify(checkpoint) } });
+}
+
+/** Approvals raised by this run (requestJson carries the runId). */
+async function findRunApprovals(runId: string) {
+  return db.approval.findMany({
+    where: { requestJson: { contains: `"runId":"${runId}"` } },
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
+/**
+ * Called by the approval APIs after a reviewer decides. Resumes the paused
+ * run (approved → re-queued, the reviewed step counts as completed) or
+ * fails it (rejected). Idempotent per approval.
+ */
+export async function resolveRunApproval(params: {
+  approvalId: string;
+  approved: boolean;
+  reviewerId?: string;
+  note?: string;
+}): Promise<{ runId: string | null; resumed: boolean; status?: RunStatus }> {
+  const approval = await db.approval.findUnique({ where: { id: params.approvalId } });
+  if (!approval) return { runId: null, resumed: false };
+  let runId: string | null = null;
+  try {
+    const requestJson = JSON.parse(approval.requestJson || '{}') as { runId?: string };
+    runId = typeof requestJson.runId === 'string' ? requestJson.runId : null;
+  } catch { /* no run link */ }
+  if (!runId) return { runId: null, resumed: false };
+
+  const run = await db.agentOSRun.findUnique({ where: { id: runId }, select: { id: true, status: true } });
+  if (!run) return { runId, resumed: false };
+  if (TERMINAL_STATUSES.includes(run.status as RunStatus)) return { runId, resumed: false, status: run.status as RunStatus };
+
+  await recordRunEvent({
+    runId,
+    type: params.approved ? 'approval.approved' : 'approval.rejected',
+    source: 'approval',
+    data: { approvalId: approval.id, approved: params.approved, reviewerId: params.reviewerId ?? null, note: params.note ?? null },
+  });
+
+  if (!params.approved) {
+    await db.agentOSRun.update({
+      where: { id: runId },
+      data: { status: 'failed', error: `Human review rejected: ${params.note ?? 'no note'}`, completedAt: new Date(), summary: 'Run stopped: reviewer rejected the escalated output.' },
+    });
+    await recordRunEvent({ runId, type: 'run.failed', source: 'approval', data: { approvalId: approval.id, reason: 'rejected' } });
+    return { runId, resumed: false, status: 'failed' };
+  }
+
+  // Approved: hand the run back to the durable worker. The worker treats the
+  // approved step as completed (see executeRun) and continues with the rest.
+  await db.agentOSRun.update({ where: { id: runId }, data: { status: 'queued', error: null } });
+  // Any older queued job for this run is superseded; one run, one active job.
+  const resumeKey = `run:${runId}:resume:${approval.id}`;
+  await db.queueItem.updateMany({
+    where: { jobId: runId, status: 'queued', NOT: { idempotencyKey: resumeKey } },
+    data: { status: 'cancelled', error: `superseded by resume job for approval ${approval.id}`, completedAt: new Date() },
+  }).catch(() => undefined);
+  await enqueue(RUN_QUEUE, RUN_JOB_TYPE, { runId, resumeFromApprovalId: approval.id }, {
+    priority: 10,
+    maxRetries: 2,
+    idempotencyKey: resumeKey,
+    jobId: runId,
+  });
+  await recordRunEvent({ runId, type: 'run.queued', source: 'approval', data: { approvalId: approval.id, resume: true } });
+  return { runId, resumed: true, status: 'queued' };
+}
+
+/**
+ * Expire pending approvals past their deadline and fail the runs waiting on
+ * them. Returns the number of approvals expired. Safe to call periodically.
+ */
+export async function expireStaleApprovals(now: Date = new Date()): Promise<number> {
+  const stale = await db.approval.findMany({
+    where: { status: 'pending', expiresAt: { lt: now } },
+    select: { id: true, requestJson: true },
+  });
+  let expired = 0;
+  for (const approval of stale) {
+    const res = await db.approval.updateMany({
+      where: { id: approval.id, status: 'pending' },
+      data: { status: 'expired', reviewedAt: now, responseNote: 'Expired: no decision before the deadline' },
+    });
+    if (res.count === 0) continue;
+    expired += 1;
+    let runId: string | null = null;
+    try { runId = (JSON.parse(approval.requestJson || '{}') as { runId?: string }).runId ?? null; } catch { /* none */ }
+    if (runId) {
+      const run = await db.agentOSRun.findUnique({ where: { id: runId }, select: { status: true } });
+      if (run && !TERMINAL_STATUSES.includes(run.status as RunStatus)) {
+        await db.agentOSRun.update({
+          where: { id: runId },
+          data: { status: 'failed', error: 'Human review expired before a decision was made', completedAt: now },
+        });
+        await recordRunEvent({ runId, type: 'approval.expired', source: 'approval', data: { approvalId: approval.id } });
+        await recordRunEvent({ runId, type: 'run.failed', source: 'approval', data: { approvalId: approval.id, reason: 'approval expired' } });
+      }
+    }
+  }
+  return expired;
 }
 
 /**
@@ -358,6 +500,49 @@ export async function executeRun(runId: string, options?: { plan?: PlanResult })
   const companyId = run.companyId ?? 'default-company';
   const userId = run.userId ?? 'anonymous';
   const outcomes: StepExecutionOutcome[] = [];
+
+  // ── Resume bookkeeping ──
+  // attempts counts worker (re)starts; a checkpoint lets us skip finished steps.
+  const attempt = (run.attempts ?? 0) + 1;
+  await db.agentOSRun.update({ where: { id: runId }, data: { attempts: attempt } });
+  const checkpoint = parseCheckpoint(run.checkpoint);
+  const resumedStepIds = new Set(Object.keys(checkpoint.steps));
+
+  // A run paused for human review only proceeds once the reviewer decided.
+  let approvedStepId: string | null = null;
+  let approvedBy: string | undefined;
+  if (run.status === 'waiting_approval' || resumedStepIds.size > 0) {
+    const approvals = await findRunApprovals(runId);
+    const pending = approvals.find((a) => a.status === 'pending');
+    if (run.status === 'waiting_approval' && pending) {
+      // Still waiting — nothing to do. The approval API re-queues the run.
+      return;
+    }
+    const rejected = approvals.find((a) => a.status === 'rejected' || a.status === 'expired');
+    if (run.status === 'waiting_approval' && rejected && !approvals.some((a) => a.status === 'approved' && a.createdAt > rejected.createdAt)) {
+      await db.agentOSRun.update({
+        where: { id: runId },
+        data: { status: 'failed', error: `Human review ${rejected.status}`, completedAt: new Date() },
+      });
+      return;
+    }
+    const approved = approvals.find((a) => a.status === 'approved');
+    if (approved) {
+      try {
+        const req = JSON.parse(approved.requestJson || '{}') as { stepId?: string };
+        approvedStepId = typeof req.stepId === 'string' ? req.stepId : null;
+      } catch { /* no step link */ }
+      approvedBy = approved.reviewedBy ?? 'reviewer';
+    }
+  }
+  if (attempt > 1) {
+    await recordRunEvent({
+      runId,
+      type: 'run.resumed',
+      source: 'orchestrator',
+      data: { attempt, checkpointedSteps: resumedStepIds.size, previousStatus: run.status, approvedStepId },
+    });
+  }
 
   const finish = async (status: RunStatus, summary: string, error?: string) => {
     await db.agentOSRun.update({
@@ -406,29 +591,67 @@ export async function executeRun(runId: string, options?: { plan?: PlanResult })
   };
 
   try {
-    // ── 1. PLAN ──
-    await db.agentOSRun.update({ where: { id: runId }, data: { status: 'planning' } });
-    const plan: PlanResult = options?.plan ?? await planObjective(run.objective, companyId);
-    await db.agentOSRun.update({ where: { id: runId }, data: { plan: JSON.stringify(plan) } });
-    await recordRunEvent({
-      runId,
-      type: 'plan.created',
-      source: 'planner',
-      data: { strategy: plan.strategy, reasoning: plan.reasoning, stepCount: plan.steps.length, plan: plan.steps },
-    });
+    // ── 1. PLAN ── (a resumed run reuses its persisted plan; never re-plans)
+    let plan: PlanResult | null = null;
+    if (attempt > 1) {
+      try {
+        const persisted = JSON.parse(run.plan || '{}') as Partial<PlanResult>;
+        if (Array.isArray(persisted.steps) && persisted.steps.length > 0) {
+          plan = { steps: persisted.steps, strategy: persisted.strategy ?? 'heuristic', reasoning: persisted.reasoning ?? 'resumed' };
+        }
+      } catch { /* plan below */ }
+    }
+    if (!plan) {
+      await db.agentOSRun.update({ where: { id: runId }, data: { status: 'planning' } });
+      plan = options?.plan ?? await planObjective(run.objective, companyId);
+      await db.agentOSRun.update({ where: { id: runId }, data: { plan: JSON.stringify(plan) } });
+      await recordRunEvent({
+        runId,
+        type: 'plan.created',
+        source: 'planner',
+        data: { strategy: plan.strategy, reasoning: plan.reasoning, stepCount: plan.steps.length, plan: plan.steps },
+      });
+    }
 
     // ── 2. RUN ──
     await db.agentOSRun.update({
       where: { id: runId },
-      data: { status: 'running', startedAt: new Date() },
+      data: { status: 'running', ...(run.startedAt ? {} : { startedAt: new Date() }) },
     });
-    await recordRunEvent({ runId, type: 'run.started', source: 'orchestrator', data: { stepCount: plan.steps.length } });
+    await recordRunEvent({ runId, type: 'run.started', source: 'orchestrator', data: { stepCount: plan.steps.length, attempt } });
 
     const orchestrator = getOrchestrator();
     const engine = getExecutionEngine();
     const stepResults = new Map<string, StepExecutionOutcome>();
 
+    // Restore checkpointed steps (in plan order) so they are not executed twice.
     for (const step of plan.steps) {
+      const saved = checkpoint.steps[step.id];
+      if (!saved) continue;
+      const { stepId: _stepId, ...rest } = saved;
+      const restored: StepExecutionOutcome = { ...rest, step };
+      // The step that paused the run for review is now approved by a human.
+      if (approvedStepId === step.id && restored.status !== 'completed') {
+        restored.status = 'completed';
+        restored.error = undefined;
+        restored.qcPassed = true;
+        restored.approvedBy = approvedBy;
+        if (restored.taskDbId) {
+          await db.task.update({ where: { id: restored.taskDbId }, data: { status: 'completed', completedAt: new Date() } }).catch(() => {});
+          await db.taskStep.updateMany({ where: { taskId: restored.taskDbId }, data: { status: 'completed', completedAt: new Date() } }).catch(() => {});
+        }
+        await recordRunEvent({
+          runId, type: 'task.completed', source: 'approval', taskId: restored.taskDbId, agentId: restored.agentId,
+          data: { stepId: step.id, title: step.title, approvedBy, note: 'Output accepted by human reviewer after QC escalation' },
+        });
+      }
+      outcomes.push(restored);
+      stepResults.set(step.id, restored);
+    }
+
+    for (const step of plan.steps) {
+      if (stepResults.has(step.id)) continue; // restored from checkpoint
+
       // Check cancellation
       const current = await db.agentOSRun.findUnique({ where: { id: runId }, select: { status: true } });
       if (current?.status === 'cancelled') {
@@ -442,7 +665,10 @@ export async function executeRun(runId: string, options?: { plan?: PlanResult })
         return !dep || dep.status !== 'completed';
       });
       if (depsFailed) {
-        outcomes.push({ step, status: 'skipped', tokens: 0, repairAttempts: 0, error: 'Skipped: dependencies did not complete' });
+        const skipped: StepExecutionOutcome = { step, status: 'skipped', tokens: 0, repairAttempts: 0, error: 'Skipped: dependencies did not complete' };
+        outcomes.push(skipped);
+        stepResults.set(step.id, skipped);
+        await saveCheckpoint(runId, outcomes);
         await recordRunEvent({ runId, type: 'task.skipped', source: 'orchestrator', data: { stepId: step.id, title: step.title } });
         continue;
       }
@@ -477,19 +703,25 @@ export async function executeRun(runId: string, options?: { plan?: PlanResult })
           },
         });
       } catch (error) {
-        outcomes.push({
+        const failed: StepExecutionOutcome = {
           step, status: 'failed', tokens: 0, repairAttempts: 0,
           error: `Agent routing failed: ${error instanceof Error ? error.message : String(error)}`,
-        });
+        };
+        outcomes.push(failed);
+        stepResults.set(step.id, failed);
+        await saveCheckpoint(runId, outcomes);
         await recordRunEvent({ runId, type: 'task.failed', source: 'orchestrator', data: { stepId: step.id, title: step.title, error: 'Agent routing failed' } });
         continue;
       }
 
       if (!selectedAgent) {
-        outcomes.push({
+        const failed: StepExecutionOutcome = {
           step, status: 'failed', tokens: 0, repairAttempts: 0, agentId: undefined,
           error: 'No active agent is available to this company for this step.',
-        });
+        };
+        outcomes.push(failed);
+        stepResults.set(step.id, failed);
+        await saveCheckpoint(runId, outcomes);
         await recordRunEvent({ runId, type: 'task.failed', source: 'orchestrator', data: { stepId: step.id, title: step.title, error: 'No available agent' } });
         continue;
       }
@@ -518,6 +750,7 @@ export async function executeRun(runId: string, options?: { plan?: PlanResult })
           status: 'pending',
           priority: run.priority ?? 'medium',
           agentId: selectedAgent.dbId,
+          runId,
           ...(run.workflowId ? { workflowId: run.workflowId } : {}),
           ...(run.userId ? { userId: run.userId } : {}),
         },
@@ -548,11 +781,14 @@ export async function executeRun(runId: string, options?: { plan?: PlanResult })
       });
       outcomes.push(outcome);
       stepResults.set(step.id, outcome);
+      await saveCheckpoint(runId, outcomes);
 
-      // Terminal escalation: human review requested → stop the pipeline.
+      // Escalation: human review requested → pause the pipeline. The run is
+      // resumed by resolveRunApproval() once a reviewer decides.
       const latest = await db.agentOSRun.findUnique({ where: { id: runId }, select: { status: true } });
       if (latest?.status === 'waiting_approval') {
         await assembleAndFinish(run, outcomes, 'waiting_approval', 'Run paused: human review required (see Approvals).');
+        await recordRunEvent({ runId, type: 'run.paused', source: 'orchestrator', data: { stepId: step.id, approvalId: outcome.approvalId ?? null } });
         return;
       }
     }
@@ -640,15 +876,32 @@ async function executeStepWithQC(params: {
     }
   };
 
+  // Every generated/repaired output is stored as an immutable version.
+  let currentVersionId: string | undefined;
+  const versionOutput = async (content: string, model: string | undefined, reason: 'initial' | 'repair') => {
+    try {
+      const v = await recordOutputVersion({ taskId: taskDbId, runId, content, model, reason });
+      currentVersionId = v.id;
+    } catch (error) {
+      console.error('[AgentOS] output versioning failed:', error);
+      currentVersionId = undefined;
+    }
+  };
+  const versionQc = async (gate: { passed: boolean; score: number; issues: string[]; assessmentId?: string }) => {
+    if (!currentVersionId) return;
+    await attachQcResult(currentVersionId, gate).catch(() => undefined);
+  };
+
   // GENERATE
-  let execution = await attemptExecution();
+  const execution = await attemptExecution();
   if (execution.ok && execution.output !== undefined) {
     lastOutput = execution.output;
     lastModel = execution.model;
     totalTokens += execution.tokens ?? 0;
+    await versionOutput(lastOutput, lastModel, 'initial');
     await recordRunEvent({
       runId, type: 'model.selected', source: 'model-router', taskId: taskDbId, agentId: selectedAgent.agentId,
-      data: { stepId: step.id, model: lastModel, tokens: execution.tokens ?? 0 },
+      data: { stepId: step.id, model: lastModel, tokens: execution.tokens ?? 0, outputVersionId: currentVersionId },
     });
   } else {
     lastError = execution.error ?? 'Agent execution failed';
@@ -667,9 +920,10 @@ async function executeStepWithQC(params: {
     });
     qcScore = gate.score;
     qcPassed = gate.passed;
+    await versionQc(gate);
     await recordRunEvent({
       runId, type: gate.passed ? 'qc.passed' : 'qc.failed', source: 'qc', taskId: taskDbId, agentId: selectedAgent.agentId,
-      data: { stepId: step.id, passed: gate.passed, score: gate.score, issues: gate.issues, assessmentId: gate.assessmentId },
+      data: { stepId: step.id, passed: gate.passed, score: gate.score, issues: gate.issues, assessmentId: gate.assessmentId, outputVersionId: currentVersionId },
     });
 
     while (!gate.passed && repairAttempts < MAX_REPAIR_ATTEMPTS) {
@@ -691,6 +945,7 @@ async function executeStepWithQC(params: {
         });
         lastOutput = repair.repaired;
         lastModel = repair.model;
+        await versionOutput(lastOutput, lastModel, 'repair');
 
         gate = await runQualityGate({
           output: lastOutput,
@@ -703,9 +958,10 @@ async function executeStepWithQC(params: {
         });
         qcScore = gate.score;
         qcPassed = gate.passed;
+        await versionQc(gate);
         await recordRunEvent({
           runId, type: gate.passed ? 'qc.passed' : 'qc.failed', source: 'qc', taskId: taskDbId, agentId: selectedAgent.agentId,
-          data: { stepId: step.id, attempt: repairAttempts, passed: gate.passed, score: gate.score, issues: gate.issues, assessmentId: gate.assessmentId },
+          data: { stepId: step.id, attempt: repairAttempts, passed: gate.passed, score: gate.score, issues: gate.issues, assessmentId: gate.assessmentId, outputVersionId: currentVersionId },
         });
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
@@ -730,6 +986,7 @@ async function executeStepWithQC(params: {
     const approval = await requestHumanReview({
       runId,
       taskDbId,
+      stepId: step.id,
       agentDbId: selectedAgent.dbId,
       title: `Human review required: step "${step.title}" failed quality control`,
       reason: `Quality control failed after ${repairAttempts} repair attempt(s). Issues: ${(qcPassed === false ? 'see QC events' : '')} ${lastError ?? 'output did not pass validation'}`,
@@ -743,7 +1000,7 @@ async function executeStepWithQC(params: {
       data: { stepId: step.id, approvalId: approval.approvalId, reason: 'QC retries exhausted' },
     });
     await db.task.update({ where: { id: taskDbId }, data: { status: 'blocked', completedAt: new Date() } });
-    return { ...base, status: 'failed', model: lastModel, tokens: totalTokens, output: lastOutput, error: 'Quality control failed; human review requested', qcScore, qcPassed, repairAttempts };
+    return { ...base, status: 'failed', model: lastModel, tokens: totalTokens, output: lastOutput, error: 'Quality control failed; human review requested', qcScore, qcPassed, repairAttempts, approvalId: approval.approvalId };
   }
 
   // Execution itself failed
@@ -812,9 +1069,9 @@ async function assembleAndFinish(
   });
   await recordRunEvent({
     runId: run.id,
-    type: status === 'completed' ? 'run.completed' : status === 'failed' ? 'run.failed' : 'run.completed',
+    type: status === 'completed' ? 'run.completed' : status === 'failed' ? 'run.failed' : status === 'waiting_approval' ? 'approval.requested' : 'run.cancelled',
     source: 'orchestrator',
-    data: { summary: summary.slice(0, 1000), ...(error ? { error: error.slice(0, 1000) } : {}), artifactId, stepCount: outcomes.length },
+    data: { summary: summary.slice(0, 1000), ...(error ? { error: error.slice(0, 1000) } : {}), artifactId, stepCount: outcomes.length, status },
   });
 
   // Episodic memory (best-effort)
