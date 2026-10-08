@@ -198,7 +198,7 @@ export async function POST(request: NextRequest) {
       }
 
       // Create session token
-      const token = await createSessionToken(user.id);
+      const token = await createSessionToken(user.id, { method: 'mfa' });
 
       // Update last login
       await db.user.update({

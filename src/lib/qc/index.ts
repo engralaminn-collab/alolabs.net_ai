@@ -111,6 +111,9 @@ export async function repairOutput(params: {
   companyId?: string;
   agentId?: string;
   attempt: number;
+  /** Observability: ties the routing decision to the run/task being repaired. */
+  runId?: string;
+  taskId?: string;
 }): Promise<RepairResult> {
   const router = getRouter();
   const request: AIRequest = {
@@ -143,7 +146,11 @@ export async function repairOutput(params: {
     temperature: 0.3,
   };
 
-  const response = await router.chat(request, params.companyId, params.agentId);
+  const response = await router.chat(request, params.companyId, params.agentId, {
+    runId: params.runId,
+    taskId: params.taskId,
+    taskType: 'qc.repair',
+  });
   return {
     repaired: response.content,
     model: response.model,
@@ -156,9 +163,13 @@ export async function repairOutput(params: {
  * waiting_approval. This is the mandatory terminal state when automated
  * repair is exhausted — the system never loops endlessly.
  */
+/** Default deadline for a human review before the waiting run is failed. */
+export const APPROVAL_TTL_HOURS = Number(process.env.APPROVAL_TTL_HOURS ?? 72);
+
 export async function requestHumanReview(params: {
   runId?: string;
   taskDbId?: string;
+  stepId?: string;
   agentDbId?: string;
   title: string;
   reason: string;
@@ -166,25 +177,39 @@ export async function requestHumanReview(params: {
   issues?: string[];
   requestedBy?: string;
   companyId?: string;
+  /** Override the review deadline (hours). */
+  ttlHours?: number;
 }): Promise<{ approvalId: string }> {
   const requestJson = {
     ...(params.runId ? { runId: params.runId } : {}),
     ...(params.taskDbId ? { taskId: params.taskDbId } : {}),
+    ...(params.stepId ? { stepId: params.stepId } : {}),
+    ...(params.agentDbId ? { agentDbId: params.agentDbId } : {}),
     reason: params.reason,
     issues: params.issues ?? [],
     outputPreview: params.output?.slice(0, 2000) ?? null,
   };
+  const ttlHours = params.ttlHours && params.ttlHours > 0 ? params.ttlHours : APPROVAL_TTL_HOURS;
+
+  // requestedBy is a FK to User; a stale/unknown user id must not prevent the
+  // escalation itself (the run would otherwise fail instead of pausing).
+  let requestedBy: string | undefined;
+  if (params.requestedBy) {
+    const user = await db.user.findUnique({ where: { id: params.requestedBy }, select: { id: true } }).catch(() => null);
+    requestedBy = user?.id;
+  }
 
   const approval = await db.approval.create({
     data: {
       id: randomUUID(),
-      type: 'legal_final',
+      type: 'qc_review',
       title: params.title,
       description: params.reason,
       requestJson: JSON.stringify(requestJson),
       status: 'pending',
       riskLevel: 'high',
-      ...(params.requestedBy ? { requestedBy: params.requestedBy } : {}),
+      expiresAt: new Date(Date.now() + ttlHours * 60 * 60 * 1000),
+      ...(requestedBy ? { requestedBy } : {}),
       ...(params.companyId ? { companyId: params.companyId } : {}),
     },
   });

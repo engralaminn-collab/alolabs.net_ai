@@ -43,7 +43,50 @@ interface ProviderEntry {
   rrIndex: number;
   /** Weight assigned to this provider for weighted strategy */
   weight: number;
+  /** Tenant that owns this provider; undefined = shared/global. */
+  companyId?: string;
+  /** Last failed initialize() — retried only after INIT_RETRY_MS. */
+  initFailedAt?: number;
+  initError?: string;
 }
+
+export interface RegisterProviderOptions {
+  weight?: number;
+  /** Restrict the provider to one tenant. Requests from other tenants never see it. */
+  companyId?: string;
+}
+
+/** Caller-supplied context so routing decisions can be tied to a run/task. */
+export interface AIRequestContext {
+  runId?: string;
+  taskId?: string;
+  taskType?: string;
+}
+
+/** One routing decision (success or failure), handed to the decision recorder. */
+export interface RoutingDecisionRecord {
+  requestedModel: string;
+  selectedProvider: string | null;
+  selectedModel: string | null;
+  reason: string;
+  candidates: string[];
+  attempts: number;
+  fallbackFrom: string | null;
+  success: boolean;
+  errorCode: string | null;
+  errorMessage: string | null;
+  latencyMs: number;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  costUsd: number | null;
+  companyId?: string;
+  agentId?: string;
+  context?: AIRequestContext;
+}
+
+export type RoutingDecisionRecorder = (record: RoutingDecisionRecord) => void | Promise<void>;
+
+const INIT_RETRY_MS = 60_000;
 
 interface UsageRecordInternal {
   provider: AIProvider;
@@ -65,16 +108,20 @@ export class AIRouter {
   };
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private _destroyed = false;
+  private decisionRecorder: RoutingDecisionRecorder | null = null;
 
   // ─── Provider Management ────────────────────────────────────────
 
-  registerProvider(provider: BaseAIProvider, weight?: number): void {
+  registerProvider(provider: BaseAIProvider, weightOrOptions?: number | RegisterProviderOptions): void {
     if (this.providers.has(provider.name)) {
       throw new AIRouterError(
         `Provider "${provider.name}" is already registered.`,
         provider.name,
       );
     }
+    const options: RegisterProviderOptions =
+      typeof weightOrOptions === 'number' ? { weight: weightOrOptions } : (weightOrOptions ?? {});
+    const weight = options.weight;
 
     this.providers.set(provider.name, {
       provider,
@@ -91,7 +138,23 @@ export class AIRouter {
       errors: [],
       rrIndex: 0,
       weight: weight ?? 1,
+      companyId: options.companyId,
     });
+  }
+
+  /** Install a sink for routing decisions (persisted by the application layer). */
+  setDecisionRecorder(recorder: RoutingDecisionRecorder | null): void {
+    this.decisionRecorder = recorder;
+  }
+
+  /** Tenant a provider is restricted to (undefined = shared). */
+  getProviderTenant(name: AIProvider): string | undefined {
+    return this.providers.get(name)?.companyId;
+  }
+
+  /** Last initialize() error for a provider, if any (secret-free message). */
+  getProviderInitError(name: AIProvider): string | undefined {
+    return this.providers.get(name)?.initError;
   }
 
   removeProvider(name: AIProvider): void {
@@ -132,8 +195,8 @@ export class AIRouter {
    * Pick the best provider and model for a given request.
    * Considers: explicit model → capability matching → strategy → cost.
    */
-  route(request: AIRequest): AIRouteDecision {
-    const available = this.getAvailableProviders();
+  route(request: AIRequest, companyId?: string): AIRouteDecision {
+    const available = this.getAvailableProviders(companyId);
 
     if (available.length === 0) {
       throw new AIProviderUnavailableError(
@@ -174,11 +237,47 @@ export class AIRouter {
 
   // ─── Chat Completion ────────────────────────────────────────────
 
-  async chat(request: AIRequest, companyId?: string, agentId?: string): Promise<AIResponse> {
+  async chat(
+    request: AIRequest,
+    companyId?: string,
+    agentId?: string,
+    context?: AIRequestContext,
+  ): Promise<AIResponse> {
     // Auto-initialize any registered but uninitialized providers
     await this.ensureProvidersInitialized();
 
-    const decision = this.route(request);
+    const startTime = Date.now();
+    const candidates = this.getAvailableProviders(companyId).map((e) => e.provider.name as string);
+    const base = {
+      requestedModel: request.model,
+      candidates,
+      companyId,
+      agentId,
+      context,
+    };
+
+    let decision: AIRouteDecision;
+    try {
+      decision = this.route(request, companyId);
+    } catch (err) {
+      this.emitDecision({
+        ...base,
+        selectedProvider: null,
+        selectedModel: null,
+        reason: 'no-provider',
+        attempts: 0,
+        fallbackFrom: null,
+        success: false,
+        errorCode: errorCodeOf(err),
+        errorMessage: errorMessageOf(err),
+        latencyMs: Date.now() - startTime,
+        promptTokens: null,
+        completionTokens: null,
+        costUsd: null,
+      });
+      throw err;
+    }
+
     const entry = this.providers.get(decision.provider);
 
     if (!entry) {
@@ -189,8 +288,6 @@ export class AIRouter {
     if (entry.health.circuitOpen) {
       throw new AICircuitOpenError(decision.provider, entry.health.circuitOpenUntil!);
     }
-
-    const startTime = Date.now();
 
     try {
       // Build request with the routed model
@@ -210,6 +307,21 @@ export class AIRouter {
         agentId,
         timestamp: new Date(),
       });
+      this.emitDecision({
+        ...base,
+        selectedProvider: decision.provider,
+        selectedModel: response.model || decision.model,
+        reason: decision.reason,
+        attempts: 1,
+        fallbackFrom: null,
+        success: true,
+        errorCode: null,
+        errorMessage: null,
+        latencyMs: Date.now() - startTime,
+        promptTokens: response.usage.promptTokens,
+        completionTokens: response.usage.completionTokens,
+        costUsd: this.estimateCost(entry, response.model || decision.model, response.usage.promptTokens, response.usage.completionTokens),
+      });
 
       return { ...response, model: response.model || decision.model };
     } catch (err) {
@@ -220,8 +332,46 @@ export class AIRouter {
       const isRetryable = err instanceof AIRouterError && err.retryable;
       if (err instanceof AICircuitOpenError || err instanceof AIProviderUnavailableError || isRetryable) {
         const fallback = await this.attemptFailover(request, decision.provider, companyId, agentId);
-        if (fallback) return fallback;
+        if (fallback) {
+          this.emitDecision({
+            ...base,
+            selectedProvider: fallback.provider,
+            selectedModel: fallback.response.model,
+            reason: 'failover',
+            attempts: fallback.attempts + 1,
+            fallbackFrom: decision.provider,
+            success: true,
+            errorCode: errorCodeOf(err),
+            errorMessage: errorMessageOf(err),
+            latencyMs: Date.now() - startTime,
+            promptTokens: fallback.response.usage.promptTokens,
+            completionTokens: fallback.response.usage.completionTokens,
+            costUsd: this.estimateCost(
+              this.providers.get(fallback.provider),
+              fallback.response.model,
+              fallback.response.usage.promptTokens,
+              fallback.response.usage.completionTokens,
+            ),
+          });
+          return fallback.response;
+        }
       }
+
+      this.emitDecision({
+        ...base,
+        selectedProvider: decision.provider,
+        selectedModel: decision.model,
+        reason: decision.reason,
+        attempts: 1,
+        fallbackFrom: null,
+        success: false,
+        errorCode: errorCodeOf(err),
+        errorMessage: errorMessageOf(err),
+        latencyMs: Date.now() - startTime,
+        promptTokens: null,
+        completionTokens: null,
+        costUsd: null,
+      });
 
       // If error is from a different provider (e.g. AIModelNotFoundError), rethrow
       if (err instanceof AIModelNotFoundError) throw err;
@@ -236,13 +386,36 @@ export class AIRouter {
     }
   }
 
+  private emitDecision(record: RoutingDecisionRecord): void {
+    if (!this.decisionRecorder) return;
+    try {
+      const result = this.decisionRecorder(record);
+      if (result && typeof (result as Promise<void>).catch === 'function') {
+        (result as Promise<void>).catch(() => { /* observability must never break routing */ });
+      }
+    } catch {
+      // ignore recorder failures
+    }
+  }
+
+  private estimateCost(
+    entry: ProviderEntry | undefined,
+    modelId: string,
+    promptTokens: number,
+    completionTokens: number,
+  ): number | null {
+    const model = entry?.provider.findModel(modelId);
+    if (!model || model.costPerMillionTokens === undefined) return null;
+    return ((promptTokens + completionTokens) / 1_000_000) * model.costPerMillionTokens;
+  }
+
   // ─── Streaming Chat Completion ──────────────────────────────────
 
   async *streamChat(request: AIRequest, companyId?: string, agentId?: string): AsyncGenerator<AIStreamChunk> {
     // Auto-initialize any registered but uninitialized providers
     await this.ensureProvidersInitialized();
 
-    const decision = this.route(request);
+    const decision = this.route(request, companyId);
     const entry = this.providers.get(decision.provider);
 
     if (!entry) {
@@ -443,16 +616,24 @@ export class AIRouter {
     failedProvider: AIProvider,
     companyId?: string,
     agentId?: string,
-  ): Promise<AIResponse | null> {
-    const available = this.getAvailableProviders().filter(
+  ): Promise<{ response: AIResponse; provider: AIProvider; attempts: number } | null> {
+    const available = this.getAvailableProviders(companyId).filter(
       (e) => e.provider.name !== failedProvider,
     );
 
+    let attempts = 0;
     for (const entry of available) {
+      attempts++;
       try {
-        const routedRequest: AIRequest = { ...request, model: entry.provider.supportedModels[0]?.id ?? request.model };
+        // Prefer the same model if the fallback provider serves it; otherwise its first model.
+        const sameModel = entry.provider.findModel(request.model)?.id;
+        const routedRequest: AIRequest = {
+          ...request,
+          model: sameModel ?? entry.provider.supportedModels[0]?.id ?? request.model,
+        };
         const response = await entry.provider.chatCompletion(routedRequest);
 
+        this.recordSuccess(entry);
         this.recordUsage({
           provider: entry.provider.name,
           model: response.model,
@@ -464,8 +645,9 @@ export class AIRouter {
         });
 
         return {
-          ...response,
-          model: response.model,
+          response: { ...response, model: response.model || routedRequest.model },
+          provider: entry.provider.name,
+          attempts,
         };
       } catch {
         this.recordFailure(entry);
@@ -483,7 +665,7 @@ export class AIRouter {
     companyId?: string,
     agentId?: string,
   ): AsyncGenerator<AIStreamChunk> | null {
-    const available = this.getAvailableProviders().filter(
+    const available = this.getAvailableProviders(companyId).filter(
       (e) => e.provider.name !== failedProvider,
     );
 
@@ -537,24 +719,56 @@ export class AIRouter {
    * Called automatically before each chat/stream request.
    */
   private async ensureProvidersInitialized(): Promise<void> {
+    const now = Date.now();
     const uninitialized = Array.from(this.providers.values()).filter(
-      (e) => !e.provider.initialized,
+      (e) => !e.provider.initialized && (!e.initFailedAt || now - e.initFailedAt > INIT_RETRY_MS),
     );
     await Promise.allSettled(
       uninitialized.map(async (e) => {
         try {
           await e.provider.initialize();
+          e.initFailedAt = undefined;
+          e.initError = undefined;
         } catch (err) {
-          console.warn(`[AI Router] Failed to initialize provider ${e.provider.name}:`, err instanceof Error ? err.message : String(err));
+          const message = err instanceof Error ? err.message : String(err);
+          const firstFailure = !e.initFailedAt;
+          e.initFailedAt = Date.now();
+          e.initError = message;
+          if (firstFailure) {
+            console.warn(`[AI Router] Failed to initialize provider ${e.provider.name}: ${message}`);
+          }
         }
       }),
     );
   }
 
-  private getAvailableProviders(): ProviderEntry[] {
+  /** Providers usable for a request: shared ones plus the tenant's own. */
+  private getAvailableProviders(companyId?: string): ProviderEntry[] {
     return Array.from(this.providers.values()).filter(
-      (e) => !e.health.circuitOpen && e.provider.initialized,
+      (e) =>
+        !e.health.circuitOpen &&
+        e.provider.initialized &&
+        (e.companyId === undefined || e.companyId === companyId),
     );
+  }
+
+  /** Public, read-only view used by health/settings endpoints. */
+  getProviderSummaries(): Array<{
+    provider: AIProvider;
+    companyId?: string;
+    initialized: boolean;
+    circuitOpen: boolean;
+    initError?: string;
+    models: string[];
+  }> {
+    return Array.from(this.providers.values()).map((e) => ({
+      provider: e.provider.name,
+      companyId: e.companyId,
+      initialized: e.provider.initialized,
+      circuitOpen: e.health.circuitOpen,
+      initError: e.initError,
+      models: e.provider.supportedModels.map((m) => m.id),
+    }));
   }
 
   private findProviderForModel(
@@ -634,4 +848,27 @@ export class AIRouter {
     if (provider) return provider.estimateRequestTokens(request) - (request.maxTokens ?? 1024);
     return 0;
   }
+}
+
+// ─── Error classification helpers ───────────────────────────────────
+
+function errorCodeOf(err: unknown): string {
+  if (err instanceof AICircuitOpenError) return 'CIRCUIT_OPEN';
+  if (err instanceof AIProviderUnavailableError) return 'PROVIDER_UNAVAILABLE';
+  if (err instanceof AIModelNotFoundError) return 'MODEL_NOT_FOUND';
+  if (err instanceof AIRouterError) {
+    if (err.statusCode === 401 || err.statusCode === 403) return 'UNAUTHORIZED';
+    if (err.statusCode === 429) return 'RATE_LIMITED';
+    if (err.statusCode && err.statusCode >= 500) return 'UPSTREAM_ERROR';
+    if (err.statusCode) return `HTTP_${err.statusCode}`;
+    return err.retryable ? 'RETRYABLE_ERROR' : 'PROVIDER_ERROR';
+  }
+  if (err instanceof Error && /abort|timeout/i.test(err.message)) return 'TIMEOUT';
+  return 'UNKNOWN';
+}
+
+function errorMessageOf(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  // Never persist bearer tokens that a provider may echo back in error bodies.
+  return message.replace(/(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+/g, '$1…').slice(0, 1000);
 }

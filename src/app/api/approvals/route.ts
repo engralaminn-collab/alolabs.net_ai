@@ -5,7 +5,7 @@ import { db } from '@/lib/db'
 import { requireCompanyAuth } from '@/lib/api-auth'
 import { approveExecution, rejectExecution } from '@/lib/ai-workforce/execution-engine'
 
-const ApprovalStatusSchema = z.enum(['pending', 'approved', 'rejected', 'expired', 'auto_approved'])
+const ApprovalStatusSchema = z.enum(['pending', 'approved', 'rejected', 'expired', 'cancelled', 'auto_approved'])
 
 const CreateApprovalSchema = z.object({
   type: z.string().trim().min(1).max(100),
@@ -108,11 +108,15 @@ export async function PUT(request: NextRequest) {
 
     const approval = await db.approval.findFirst({
       where: { id: parsed.data.approvalId, companyId: user.companyId },
-      select: { id: true, executionId: true, status: true },
+      select: { id: true, executionId: true, status: true, expiresAt: true },
     })
     if (!approval) return NextResponse.json({ error: 'Approval not found for this company' }, { status: 404 })
     if (approval.status !== 'pending') {
       return NextResponse.json({ error: 'Only pending approvals can be reviewed' }, { status: 409 })
+    }
+    if (approval.expiresAt && approval.expiresAt.getTime() < Date.now()) {
+      await db.approval.updateMany({ where: { id: approval.id, status: 'pending' }, data: { status: 'expired', reviewedAt: new Date() } })
+      return NextResponse.json({ error: 'Approval has expired and can no longer be decided' }, { status: 409 })
     }
 
     if (approval.executionId) {
@@ -174,7 +178,22 @@ export async function PUT(request: NextRequest) {
       })
     })
 
-    return NextResponse.json({ success: true, status: result?.status })
+    // If an AgentOS run paused for this review, resume or fail it.
+    const { resolveRunApproval } = await import('@/lib/runs')
+    const resolution = await resolveRunApproval({
+      approvalId: approval.id,
+      approved: action === 'approve',
+      reviewerId: user.userId,
+      note: parsed.data.comment,
+    })
+
+    return NextResponse.json({
+      success: true,
+      status: result?.status,
+      runId: resolution.runId,
+      resumedRunId: resolution.resumed ? resolution.runId : null,
+      runStatus: resolution.status ?? null,
+    })
   } catch (error: unknown) {
     return errorResponse(error)
   }

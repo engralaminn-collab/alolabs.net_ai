@@ -13,6 +13,8 @@ export type AIProvider =
   | 'openrouter'
   | 'zai-sdk'
   | 'openai-compatible'
+  /** Additional OpenAI-compatible endpoints configured at runtime (AIProviderConfig). */
+  | `openai-compatible:${string}`
   | 'groq'
   | 'deepseek'
   | 'mistral'

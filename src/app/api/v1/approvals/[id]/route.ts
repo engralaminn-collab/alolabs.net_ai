@@ -1,12 +1,12 @@
 import { z } from 'zod';
 import { v1Handler, v1Body, V1Error } from '@/lib/v1';
 import { db } from '@/lib/db';
-import { recordRunEvent } from '@/lib/runs';
 
 /**
  * /api/v1/approvals/:id — approve or reject (POST with action), or read (GET).
  * Approvals are recorded in the audit log; the run waiting on the approval
- * is resumed or failed accordingly.
+ * is resumed (re-queued to the durable worker) or failed accordingly.
+ * Expired approvals cannot be decided.
  */
 
 const ActionSchema = z.object({
@@ -37,6 +37,10 @@ export const POST = v1Handler(async ({ identity }, request) => {
   if (approval.status !== 'pending') {
     throw new V1Error(`Approval is already ${approval.status}`, 409, 'CONFLICT');
   }
+  if (approval.expiresAt && approval.expiresAt.getTime() < Date.now()) {
+    await db.approval.updateMany({ where: { id: approval.id, status: 'pending' }, data: { status: 'expired', reviewedAt: new Date() } });
+    throw new V1Error('Approval has expired and can no longer be decided', 409, 'EXPIRED');
+  }
 
   const body = await v1Body<unknown>(request);
   const parsed = ActionSchema.safeParse(body);
@@ -45,8 +49,8 @@ export const POST = v1Handler(async ({ identity }, request) => {
   }
 
   const approved = parsed.data.action === 'approve';
-  const updated = await db.approval.update({
-    where: { id: approval.id },
+  const decided = await db.approval.updateMany({
+    where: { id: approval.id, status: 'pending' },
     data: {
       status: approved ? 'approved' : 'rejected',
       reviewedBy: identity.userId,
@@ -54,37 +58,21 @@ export const POST = v1Handler(async ({ identity }, request) => {
       responseNote: parsed.data.note ?? null,
     },
   });
-
-  // Resume or fail the waiting run, if any
-  let runId: string | null = null;
-  try {
-    const requestJson = JSON.parse(approval.requestJson || '{}') as { runId?: string };
-    runId = typeof requestJson.runId === 'string' ? requestJson.runId : null;
-  } catch { /* no run link */ }
-
-  if (runId) {
-    // A QC approval acknowledges the reviewed output; it is NOT a new
-    // execution. Do not mark the run "running" without a queued worker —
-    // that would create a permanently stuck, falsely active run. The run
-    // remains paused until a real resume path is implemented.
-    if (!approved) {
-      await db.agentOSRun.update({
-        where: { id: runId },
-        data: { status: 'failed', error: `Human review rejected: ${parsed.data.note ?? 'no note'}`, completedAt: new Date() },
-      });
-    } else {
-      await db.agentOSRun.update({
-        where: { id: runId },
-        data: { summary: 'Human review approved. Manual continuation is required; this run has not resumed.' },
-      });
-    }
-    await recordRunEvent({
-      runId,
-      type: approved ? 'approval.approved' : 'run.failed',
-      source: 'approval',
-      data: { approvalId: approval.id, approved, note: parsed.data.note ?? null },
-    });
+  if (decided.count !== 1) {
+    throw new V1Error('Approval was decided concurrently', 409, 'CONFLICT');
   }
+  const updated = await db.approval.findUniqueOrThrow({ where: { id: approval.id } });
+
+  // Resume (approved → re-queued for the durable worker) or fail (rejected)
+  // the run that paused for this review. resolveRunApproval is idempotent.
+  const { resolveRunApproval } = await import('@/lib/runs');
+  const resolution = await resolveRunApproval({
+    approvalId: approval.id,
+    approved,
+    reviewerId: identity.userId,
+    note: parsed.data.note,
+  });
+  const runId = resolution.runId;
 
   // Audit log
   await db.auditLog.create({
@@ -98,7 +86,7 @@ export const POST = v1Handler(async ({ identity }, request) => {
 
   return {
     approval: updated,
-    resumedRunId: null,
-    ...(approved && runId ? { continuationRequired: true, message: 'Human review recorded. Automatic continuation is not yet available.' } : {}),
+    resumedRunId: resolution.resumed ? runId : null,
+    runStatus: resolution.status ?? null,
   };
 });

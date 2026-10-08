@@ -205,7 +205,10 @@ describe('Job Queue', () => {
       mockedDb.queueItem.update.mockResolvedValue(makeQueueItem({ status: 'completed' }));
       await completeJob('item-1', { sent: true });
       const call = mockedDb.queueItem.update.mock.calls[0][0] as any;
-      expect(call.data.payload).toBe('{"sent":true}');
+      // Results live in their own column; the original payload is preserved for audit/replay.
+      expect(call.data.result).toBe('{"sent":true}');
+      expect(call.data.payload).toBeUndefined();
+      expect(call.data.lockedBy).toBeNull();
     });
   });
 

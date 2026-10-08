@@ -509,11 +509,16 @@ export class AgentExecutionEngine {
         temperature: taskClassification.complexity === 'simple' ? 0.3 : 0.7,
       };
 
+      const routingContext = {
+        taskId,
+        runId: typeof task.context?.runId === 'string' ? task.context.runId : undefined,
+        taskType: `agent.task.${taskClassification.complexity}`,
+      };
       let aiResponse;
       let modelFallback = false;
       let fallbackTriggerError: string | undefined;
       try {
-        aiResponse = await router.chat(routerRequest, task.companyId, task.agentId);
+        aiResponse = await router.chat(routerRequest, task.companyId, task.agentId, routingContext);
       } catch (routerError) {
         const routerErrorCode = this.classifyError(routerError);
         if (!FALLBACK_RETRYABLE_ERRORS.has(routerErrorCode)) throw routerError;
@@ -525,6 +530,7 @@ export class AgentExecutionEngine {
             { ...routerRequest, model: fallbackModel },
             task.companyId,
             task.agentId,
+            routingContext,
           );
           modelFallback = true;
           fallbackTriggerError = routerErrorCode;

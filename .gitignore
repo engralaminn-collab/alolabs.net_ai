@@ -44,14 +44,17 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-local-*
+# Root-level scratch files only. A bare `local-*` pattern previously ignored
+# src/lib/storage/local-storage.ts and broke the committed build — never use
+# unanchored wildcard patterns that can match source files.
+/local-*
 .claude
 .z-ai-config
 *.log
 dev.log
 dev.out.log
-test
-prompt
+/test
+/prompt
 
 server.log
 # Skills directory

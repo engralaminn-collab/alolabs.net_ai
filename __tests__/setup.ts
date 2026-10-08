@@ -7,6 +7,10 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
+// Keep the real fetch reachable for node-environment tests that talk to a
+// local HTTP server (see __tests__/helpers/real-fetch.ts).
+(globalThis as unknown as { __realFetch?: typeof fetch }).__realFetch = globalThis.fetch;
+
 // Mock fetch for API calls
 global.fetch = vi.fn(() =>
   Promise.resolve({

@@ -14,7 +14,7 @@ import type {
   AIGatewayAPIResult,
   AIGatewayError,
 } from './types';
-import { getRouter } from '@/lib/ai-router';
+import { getRouter, ensureRouterSynced } from '@/lib/ai-router';
 import type { AIRequest, AIMessage, AIRouteDecision, AIModel, AIProviderHealth } from '@/lib/ai-router';
 import {
   AIRouterError,
@@ -233,11 +233,11 @@ export class AIGateway {
 
     try {
       validateGatewayRequest(req);
-      const router = getRouter();
+      const router = await ensureRouterSynced();
       const aiReq = toAIRequest(req);
 
       const startTime = Date.now();
-      const response = await router.chat(aiReq, req.companyId, req.agentId);
+      const response = await router.chat(aiReq, req.companyId, req.agentId, { taskType: 'gateway.chat' });
       const latencyMs = Date.now() - startTime;
 
       const totalTokens = response.usage.promptTokens + response.usage.completionTokens;
@@ -290,7 +290,7 @@ export class AIGateway {
 
     try {
       validateGatewayRequest(req);
-      const router = getRouter();
+      const router = await ensureRouterSynced();
       const aiReq = toAIRequest(req);
 
       const startTime = Date.now();
@@ -354,10 +354,10 @@ export class AIGateway {
 
     try {
       validateGatewayRequest(req);
-      const router = getRouter();
+      const router = await ensureRouterSynced();
       const aiReq = toAIRequest(req);
 
-      const decision: AIRouteDecision = router.route(aiReq);
+      const decision: AIRouteDecision = router.route(aiReq, req.companyId);
 
       // Find the model details for cost/latency estimates
       const provider = router.getProvider(decision.provider);
@@ -497,7 +497,7 @@ export class AIGateway {
     const requestId = generateRequestId();
 
     try {
-      const router = getRouter();
+      const router = await ensureRouterSynced();
       const providers = router.getRegisteredProviders();
       const allModels: Array<{
         id: string;
@@ -549,7 +549,7 @@ export class AIGateway {
     const requestId = generateRequestId();
 
     try {
-      const router = getRouter();
+      const router = await ensureRouterSynced();
       const registered = router.getRegisteredProviders();
       const healthMap = await router.getHealthStatus();
 

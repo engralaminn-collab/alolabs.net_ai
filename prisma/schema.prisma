@@ -267,22 +267,26 @@ model Task {
   agentId      String?
   workflowId   String?
   userId       String?
+  runId        String? // AgentOSRun that created this task (precise run linkage)
   startedAt    DateTime?
   completedAt  DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  agent      Agent?      @relation(fields: [agentId], references: [id])
-  workflow   Workflow?   @relation(fields: [workflowId], references: [id])
-  steps      TaskStep[]
-  outputs    Output[]
-  taskErrors TaskError[]
-  agentRuns  AgentRun[]
-  skillRuns  SkillRun[]
-  artifacts  Artifact[]
+  agent          Agent?          @relation(fields: [agentId], references: [id])
+  workflow       Workflow?       @relation(fields: [workflowId], references: [id])
+  steps          TaskStep[]
+  outputs        Output[]
+  outputVersions OutputVersion[]
+  taskErrors     TaskError[]
+  agentRuns      AgentRun[]
+  skillRuns      SkillRun[]
+  artifacts      Artifact[]
 
   @@index([agentId])
   @@index([workflowId])
+  @@index([runId])
+  @@index([status])
 }
 
 model TaskStep {
@@ -342,11 +346,11 @@ model WorkflowStep {
 
 model Approval {
   id           String    @id @default(cuid())
-  type         String // agent_build, skill_build, workflow_build, tool_approval, paid_api, external_cost, deployment, dns_change, file_delete, public_publish, bulk_whatsapp, real_human_face, voice_clone, legal_final, financial_final, shell_command, new_agent, new_skill, new_workflow
+  type         String // qc_review, agent_build, skill_build, workflow_build, tool_approval, paid_api, external_cost, deployment, dns_change, file_delete, public_publish, bulk_whatsapp, real_human_face, voice_clone, legal_final, financial_final, shell_command, new_agent, new_skill, new_workflow
   title        String
   description  String?
   requestJson  String    @default("{}")
-  status       String    @default("pending") // pending, approved, rejected, expired
+  status       String    @default("pending") // pending, approved, rejected, expired, cancelled
   requestedBy  String?
   reviewedBy   String?
   reviewedAt   DateTime?
@@ -354,6 +358,7 @@ model Approval {
   riskLevel    String    @default("medium")
   executionId  String?
   companyId    String?
+  expiresAt    DateTime? // pending approvals past this instant are expired, never executed
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
@@ -712,6 +717,7 @@ model Company {
   agentLearningSessions AgentLearningSession[]
   projects              Project[]
   artifacts             Artifact[]
+  providerConfigs       AIProviderConfig[]
 }
 
 model CompanyUser {
@@ -1322,22 +1328,30 @@ model JobQueue {
 }
 
 model QueueItem {
-  id          String    @id @default(cuid())
-  queueId     String
-  jobId       String? // references AgentRun, SkillRun, WorkflowRun, or generic job
-  jobType     String // agent_run, skill_run, workflow_run, email, report, maintenance
-  priority    Int       @default(0)
-  payload     String    @default("{}")
-  status      String    @default("queued") // queued, processing, completed, failed, cancelled
-  attempts    Int       @default(0)
-  maxAttempts Int       @default(3)
-  error       String?
-  startedAt   DateTime?
-  completedAt DateTime?
-  scheduledAt DateTime?
-  createdAt   DateTime  @default(now())
+  id             String    @id @default(cuid())
+  queueId        String
+  jobId          String? // references AgentRun, SkillRun, WorkflowRun, or generic job
+  jobType        String // agent_run, skill_run, workflow_run, email, report, maintenance
+  priority       Int       @default(0)
+  payload        String    @default("{}")
+  status         String    @default("queued") // queued, processing, completed, failed, cancelled
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(3)
+  error          String?
+  result         String? // handler result (payload is preserved for audit)
+  idempotencyKey String?   @unique // duplicate-delivery prevention
+  lockedBy       String? // worker id holding the processing lease
+  lockExpiresAt  DateTime? // lease expiry; expired leases are reclaimed
+  heartbeatAt    DateTime?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  scheduledAt    DateTime?
+  createdAt      DateTime  @default(now())
 
   queue JobQueue @relation(fields: [queueId], references: [id], onDelete: Cascade)
+
+  @@index([queueId, status, scheduledAt])
+  @@index([status, lockExpiresAt])
 }
 
 // ========== TOKEN BUDGETING ==========
@@ -3296,8 +3310,8 @@ model RunEvent {
 model AgentOSRun {
   id          String    @id @default(cuid())
   objective   String
-  status      String   @default("queued") // queued, planning, running, waiting_approval, completed, failed, cancelled
-  plan        String   @default("[]") // JSON array of planned steps
+  status      String    @default("queued") // queued, planning, running, waiting_approval, completed, failed, cancelled
+  plan        String    @default("[]") // JSON array of planned steps
   summary     String?
   error       String?
   commandId   String?
@@ -3305,16 +3319,128 @@ model AgentOSRun {
   workflowId  String?
   companyId   String?
   userId      String?
-  priority    String   @default("normal")
+  priority    String    @default("normal")
+  checkpoint  String    @default("{}") // JSON step outcomes; lets a run resume after a restart
+  attempts    Int       @default(0) // number of times a worker (re)started this run
   startedAt   DateTime?
   completedAt DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@index([companyId])
   @@index([userId])
   @@index([projectId])
   @@index([workflowId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ─── AgentOS hardening (2026-10-09) ──────────────────────────────────────────
+
+/// Every generated/repaired output of a task, kept as an immutable version so
+/// QC failures and repairs preserve evidence instead of overwriting it.
+model OutputVersion {
+  id           String   @id @default(cuid())
+  taskId       String
+  runId        String?
+  version      Int
+  content      String
+  model        String?
+  reason       String   @default("initial") // initial, repair, manual
+  qcPassed     Boolean?
+  qcScore      Float?
+  qcIssues     String   @default("[]")
+  assessmentId String?
+  createdAt    DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, version])
+  @@index([runId])
+}
+
+/// Configured AI provider (platform-wide when companyId is null). The API key
+/// is stored AES-256-GCM encrypted under ENCRYPTION_KEY (src/lib/security/field-encryption.ts); only a fingerprint
+/// is ever returned to clients.
+model AIProviderConfig {
+  id                  String    @id @default(cuid())
+  companyId           String?
+  provider            String // openai-compatible, anthropic, ollama, openrouter, groq, deepseek, mistral, zai-sdk
+  name                String
+  baseUrl             String?
+  encryptedApiKey     String?
+  keyFingerprint      String?
+  models              String    @default("[]") // JSON array of { id, capabilities, contextLength, costPerMillionTokens }
+  isEnabled           Boolean   @default(true)
+  priority            Int       @default(100)
+  timeoutMs           Int       @default(60000)
+  maxRetries          Int       @default(2)
+  lastHealthStatus    String? // healthy, degraded, unreachable, unauthorized
+  lastHealthAt        DateTime?
+  lastHealthLatencyMs Int?
+  lastError           String?
+  createdBy           String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, name])
+  @@index([provider])
+  @@index([isEnabled, priority])
+}
+
+/// One row per model-router decision (success or failure) for observability,
+/// cost tracking and fallback analysis.
+model ModelRoutingDecision {
+  id               String   @id @default(cuid())
+  runId            String?
+  taskId           String?
+  companyId        String?
+  agentId          String?
+  requestedModel   String
+  taskType         String?
+  selectedProvider String?
+  selectedModel    String?
+  reason           String   @default("")
+  candidates       String   @default("[]")
+  attempts         Int      @default(1)
+  fallbackFrom     String?
+  success          Boolean  @default(false)
+  errorCode        String?
+  errorMessage     String?
+  latencyMs        Int?
+  promptTokens     Int?
+  completionTokens Int?
+  costUsd          Float?
+  createdAt        DateTime @default(now())
+
+  @@index([runId])
+  @@index([companyId, createdAt])
+  @@index([selectedProvider])
+}
+
+/// Backup ledger. A backup is only "verified" after its checksums were
+/// re-validated and (for SQLite) an integrity check of the copy passed.
+model BackupRecord {
+  id              String    @id @default(cuid())
+  backupId        String    @unique
+  kind            String    @default("manual") // manual, scheduled
+  status          String    @default("created") // created, verified, failed, restore_tested
+  location        String
+  manifest        String    @default("{}")
+  checksum        String    @default("")
+  sizeBytes       BigInt    @default(0)
+  appVersion      String?
+  commit          String?
+  schemaVersion   String?
+  verifiedAt      DateTime?
+  restoreTestedAt DateTime?
+  retentionUntil  DateTime?
+  createdBy       String?
+  error           String?
+  createdAt       DateTime  @default(now())
+
   @@index([status])
   @@index([createdAt])
 }

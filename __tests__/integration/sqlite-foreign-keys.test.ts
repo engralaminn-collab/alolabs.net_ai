@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, copyFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, copyFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 const root = process.cwd();
 const cli = join(root, 'node_modules/tsx/dist/cli.mjs');
 const generator = join(root, 'scripts/sqlite-push.ts');
+const schemaModelCount = (readFileSync(join(root, 'prisma/schema.prisma'), 'utf8').match(/^model\s+\w+\s*\{/gm) ?? []).length;
 
 describe('air-gapped SQLite schema integrity (real temporary databases)', () => {
   it('creates foreign keys, enforces them, and refuses silent drift on existing databases', () => {
@@ -19,7 +20,8 @@ describe('air-gapped SQLite schema integrity (real temporary databases)', () => 
       const db = new Database(file);
       try {
         const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
-        expect(tables).toHaveLength(175);
+        expect(schemaModelCount).toBeGreaterThanOrEqual(179);
+        expect(tables).toHaveLength(schemaModelCount);
         const fks = db.prepare('PRAGMA foreign_key_list("RolePermission")').all() as Array<{ table: string; from: string }>;
         expect(fks).toEqual(expect.arrayContaining([
           expect.objectContaining({ table: 'Role', from: 'roleId' }),

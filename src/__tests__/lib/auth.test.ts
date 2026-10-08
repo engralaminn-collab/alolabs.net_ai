@@ -6,7 +6,9 @@ vi.mock('@/lib/db', () => ({
     settings: {
       upsert: vi.fn().mockResolvedValue({}),
       findUnique: vi.fn().mockResolvedValue(null),
+      update: vi.fn().mockResolvedValue({}),
       delete: vi.fn().mockResolvedValue({}),
+      findMany: vi.fn().mockResolvedValue([]),
     },
   },
 }));
@@ -119,6 +121,19 @@ describe('Auth Library', () => {
       const token2 = await createSessionToken('user-2');
       expect(token1).not.toBe(token2);
     });
+
+    it('should persist createdAt, expiresAt (24h default) and lastUsedAt', async () => {
+      const before = Date.now();
+      await createSessionToken('user-ttl', { method: 'password' });
+      const call = mockedDb.settings.upsert.mock.calls[0][0];
+      const value = JSON.parse(call!.create.value as string);
+      expect(value.method).toBe('password');
+      const createdAt = Date.parse(value.createdAt);
+      const expiresAt = Date.parse(value.expiresAt);
+      expect(createdAt).toBeGreaterThanOrEqual(before);
+      expect(expiresAt - createdAt).toBe(24 * 60 * 60 * 1000);
+      expect(value.lastUsedAt).toBe(value.createdAt);
+    });
   });
 
   // ─── verifySessionToken ────────────────────────────────────────────
@@ -139,13 +154,78 @@ describe('Auth Library', () => {
       expect(result).toBeNull();
     });
 
-    it('should return { userId } when a valid session exists', async () => {
+    const freshSession = (overrides: Record<string, unknown> = {}) => {
+      const now = Date.now();
+      return JSON.stringify({
+        userId: 'user-abc',
+        createdAt: new Date(now).toISOString(),
+        expiresAt: new Date(now + 60 * 60 * 1000).toISOString(),
+        lastUsedAt: new Date(now).toISOString(),
+        ...overrides,
+      });
+    };
+
+    it('should return { userId, session } when a valid unexpired session exists', async () => {
       mockedDb.settings.findUnique.mockResolvedValue({
         key: 'session:abc123',
-        value: JSON.stringify({ userId: 'user-abc' }),
+        value: freshSession(),
       });
       const result = await verifySessionToken('abc123');
-      expect(result).toEqual({ userId: 'user-abc' });
+      expect(result?.userId).toBe('user-abc');
+      expect(result?.session.expiresAt).toBeDefined();
+      expect(mockedDb.settings.delete).not.toHaveBeenCalled();
+    });
+
+    it('should reject and delete an expired session (absolute TTL)', async () => {
+      mockedDb.settings.findUnique.mockResolvedValue({
+        key: 'session:old',
+        value: freshSession({ expiresAt: new Date(Date.now() - 1000).toISOString() }),
+      });
+      const result = await verifySessionToken('old');
+      expect(result).toBeNull();
+      expect(mockedDb.settings.delete).toHaveBeenCalledWith({ where: { key: 'session:old' } });
+    });
+
+    it('should reject a session idle for longer than the idle timeout', async () => {
+      const thirteenHoursAgo = new Date(Date.now() - 13 * 60 * 60 * 1000).toISOString();
+      mockedDb.settings.findUnique.mockResolvedValue({
+        key: 'session:idle',
+        value: freshSession({
+          expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+          lastUsedAt: thirteenHoursAgo,
+        }),
+      });
+      const result = await verifySessionToken('idle');
+      expect(result).toBeNull();
+    });
+
+    it('should reject legacy sessions that carry no expiry (forces re-login)', async () => {
+      mockedDb.settings.findUnique.mockResolvedValue({
+        key: 'session:legacy',
+        value: JSON.stringify({ userId: 'user-abc' }),
+      });
+      const result = await verifySessionToken('legacy');
+      expect(result).toBeNull();
+      expect(mockedDb.settings.delete).toHaveBeenCalled();
+    });
+
+    it('should reject absurdly long tokens without touching the database', async () => {
+      const result = await verifySessionToken('x'.repeat(600));
+      expect(result).toBeNull();
+      expect(mockedDb.settings.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('should refresh lastUsedAt when the session was last used more than 5 minutes ago', async () => {
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      mockedDb.settings.findUnique.mockResolvedValue({
+        key: 'session:touch',
+        value: freshSession({ lastUsedAt: tenMinutesAgo }),
+      });
+      const result = await verifySessionToken('touch');
+      expect(result?.userId).toBe('user-abc');
+      expect(mockedDb.settings.update).toHaveBeenCalledTimes(1);
+      const call = mockedDb.settings.update.mock.calls[0][0] as { data: { value: string } };
+      expect(JSON.parse(call.data.value).lastUsedAt).not.toBe(tenMinutesAgo);
     });
 
     it('should return null when the stored value has no userId', async () => {
