@@ -333,7 +333,7 @@ function drawNodes(
     if (isDecision) {
       b.decision({ x: r.x, y: r.y - 8, w: r.w, h: r.h + 16 }, { name: n.name, sublabel: n.sublabel, id: n.id })
     } else {
-      b.node(r, { id: n.id, name: n.name, sublabel: n.sublabel, tag: n.tag, kind: n.kind })
+      b.node(r, { id: n.id, name: n.name, sublabel: n.sublabel, tag: n.tag, kind: n.kind, icon: n.icon })
     }
   }
 }

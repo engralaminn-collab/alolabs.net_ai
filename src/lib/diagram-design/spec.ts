@@ -12,6 +12,7 @@
  */
 
 import type { DiagramKind, DiagramVariant, LinkRole, NodeKind, SkinName, TextRole, Theme } from './tokens'
+import type { MotionSpec } from './motion'
 
 // ─── Primitives ──────────────────────────────────────────────────────────────
 
@@ -69,6 +70,8 @@ export type Prim =
       baseline?: 'auto' | 'middle'
     }
   | { t: 'mask'; x: number; y: number; w: number; h: number; rx?: number }
+  /** A named monochrome icon from the icon set (icons.ts). Uses currentColor via `color`. */
+  | { t: 'icon'; name: string; x: number; y: number; size: number; color: string }
 
 export interface SceneItem {
   /** Paint order — see the module header. */
@@ -76,6 +79,8 @@ export interface SceneItem {
   prim: Prim
   /** Optional identifier used by the audit and by interactive hover states. */
   id?: string
+  /** The node this primitive belongs to; motion steps reveal whole groups. */
+  group?: string
 }
 
 export interface LegendItem {
@@ -134,6 +139,8 @@ export interface NodeSpec {
   /** Explicit grid slot for engines that honour coordinates. */
   col?: number
   row?: number
+  /** Name from the icon set (icons.ts). Drawn top-right when the node is tall enough. */
+  icon?: string
   /** Optional parent zone / lane id. */
   zone?: string
 }
@@ -259,6 +266,8 @@ export interface NoteSpec {
   text: string
   /** Where the note anchors in the figure. */
   at: 'start' | 'end' | 'under'
+  /** Optional node id. When set, the note draws a dashed leader and a landing dot on that node (primitive-annotation.md). */
+  target?: string
 }
 
 export interface DiagramSpec {
@@ -282,6 +291,12 @@ export interface DiagramSpec {
   header?: boolean
   /** Footer colophon line (mono, muted) under the figure. */
   footer?: string
+  /** Optional playback. Absent or `mode: 'none'` ships the complete static figure. */
+  motion?: MotionSpec
+  /** `terminal` wraps the figure in the CLI-chrome window (primitive-terminal.md). */
+  frame?: 'editorial' | 'terminal'
+  /** Hand-drawn displacement on shapes; text is never filtered (primitive-sketchy.md). */
+  sketchy?: boolean
 
   nodes?: NodeSpec[]
   links?: LinkSpec[]

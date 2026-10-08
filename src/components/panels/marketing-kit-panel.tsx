@@ -95,6 +95,8 @@ export default function MarketingKitPanel() {
   const [installing, setInstalling] = React.useState(false)
   const [installed, setInstalled] = React.useState<string[]>([])
   const [activeRef, setActiveRef] = React.useState<{ heading: string; content: string } | null>(null)
+  const [activeAsset, setActiveAsset] = React.useState<{ path: string; contentType: string; content: string } | null>(null)
+  const [assetLoading, setAssetLoading] = React.useState(false)
   const [refLoading, setRefLoading] = React.useState(false)
 
   const load = React.useCallback(async () => {
@@ -123,6 +125,7 @@ export default function MarketingKitPanel() {
     setOpenSlug(slug)
     setDetail(null)
     setActiveRef(null)
+  setActiveAsset(null)
     setDetailLoading(true)
     try {
       const res = await fetchApi<DetailResponse>(`/api/marketing-kit/${slug}`)
@@ -146,6 +149,22 @@ export default function MarketingKitPanel() {
       toast.error('Could not load this reference')
     } finally {
       setRefLoading(false)
+    }
+  }
+
+  const openAsset = async (path: string) => {
+    if (!openSlug) return
+    setAssetLoading(true)
+    try {
+      const res = await fetchApi<{ asset: { path: string; contentType: string; content: string } }>(
+        `/api/marketing-kit/${openSlug}?asset=${encodeURIComponent(path)}`,
+      )
+      setActiveRef(null)
+      setActiveAsset(res.asset)
+    } catch {
+      toast.error('Could not load this template')
+    } finally {
+      setAssetLoading(false)
     }
   }
 
@@ -304,9 +323,12 @@ export default function MarketingKitPanel() {
                 <div className="space-y-3 p-4">
                   <Button
                     size="sm"
-                    variant={activeRef ? 'editorialGhost' : 'editorial'}
+                    variant={activeRef || activeAsset ? 'editorialGhost' : 'editorial'}
                     className="w-full justify-start"
-                    onClick={() => setActiveRef(null)}
+                    onClick={() => {
+                      setActiveRef(null)
+                      setActiveAsset(null)
+                    }}
                   >
                     <Layers className="size-3.5" /> Playbook
                   </Button>
@@ -330,6 +352,27 @@ export default function MarketingKitPanel() {
                       <p className="px-2 text-xs text-slate-400">No reference documents.</p>
                     )}
                   </div>
+                  {detail && detail.assets.length > 0 && (
+                    <>
+                      <p className="pt-2 font-mono text-[9px] uppercase tracking-[0.16em] text-slate-400">
+                        Templates ({detail.assets.length})
+                      </p>
+                      <div className="space-y-1">
+                        {detail.assets.map((asset) => (
+                          <button
+                            key={asset.path}
+                            onClick={() => openAsset(asset.path)}
+                            className="block w-full rounded px-2 py-1.5 text-left text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                          >
+                            <span className="block truncate font-medium">{asset.path.split('/').pop()}</span>
+                            <span className="font-mono text-[9px] uppercase tracking-wider text-slate-400">
+                              {(asset.bytes / 1024).toFixed(1)} kb
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
               </ScrollArea>
             </aside>
@@ -338,8 +381,32 @@ export default function MarketingKitPanel() {
               <div className="p-6">
                 {detailLoading && <Skeleton className="h-64 w-full" />}
                 {refLoading && <Skeleton className="h-40 w-full" />}
+                {assetLoading && <Skeleton className="h-40 w-full" />}
 
-                {!detailLoading && !refLoading && activeRef && (
+                {!detailLoading && !assetLoading && activeAsset && openSlug && (
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-400">Template</p>
+                      <div className="flex gap-2">
+                        <a
+                          href={`/api/marketing-kit/${openSlug}?asset=${encodeURIComponent(activeAsset.path)}&download=1`}
+                          className="inline-flex h-8 items-center rounded-[6px] border border-slate-300 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                        >
+                          <Download className="mr-1 size-3.5" /> Download
+                        </a>
+                        <Button size="sm" variant="editorialGhost" onClick={() => setActiveAsset(null)}>
+                          <X className="size-3.5" /> Close
+                        </Button>
+                      </div>
+                    </div>
+                    <h3 className="font-mono text-sm text-slate-900">{activeAsset.path}</h3>
+                    <pre className="max-h-[360px] overflow-auto whitespace-pre-wrap break-words rounded-md border border-slate-200 bg-slate-50 p-3 font-mono text-[11px] leading-relaxed text-slate-700">
+                      {activeAsset.content}
+                    </pre>
+                  </div>
+                )}
+
+                {!detailLoading && !refLoading && !assetLoading && activeRef && (
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
                       <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-slate-400">Reference</p>
@@ -352,7 +419,7 @@ export default function MarketingKitPanel() {
                   </div>
                 )}
 
-                {!detailLoading && !refLoading && !activeRef && detail && (
+                {!detailLoading && !refLoading && !assetLoading && !activeRef && !activeAsset && detail && (
                   <div className="space-y-4">
                     {detail.triggers.length > 0 && (
                       <div className="flex flex-wrap gap-1.5">

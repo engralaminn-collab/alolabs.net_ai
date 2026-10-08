@@ -103,9 +103,28 @@ export const ALO_SKIN: Record<Theme, RoleTokens> = {
   },
 }
 
-export type SkinName = 'editorial' | 'alo'
+/**
+ * Terminal skin (primitive-terminal.md, style-guide.md § Terminal skin). A fixed dark palette,
+ * independent of the light/dark theme. One accent only: link maps to ink so no second hue appears.
+ */
+export const TERMINAL_SKIN: RoleTokens = {
+  paper: '#141414',
+  paper2: '#1b1b1b',
+  ink: '#f5f5f5',
+  inkStrong: '#0a0a0a',
+  muted: '#9a9a9a',
+  soft: '#5c5c5c',
+  rule: 'rgba(255,255,255,0.10)',
+  ruleSolid: '#2b2b2b',
+  accent: '#ff5a36',
+  accentTint: 'rgba(255,90,54,0.12)',
+  link: '#f5f5f5',
+}
+
+export type SkinName = 'editorial' | 'alo' | 'terminal'
 
 export function resolveSkin(skin: SkinName | undefined, theme: Theme): RoleTokens {
+  if (skin === 'terminal') return TERMINAL_SKIN
   if (skin === 'alo') return ALO_SKIN[theme]
   return TOKENS[theme]
 }

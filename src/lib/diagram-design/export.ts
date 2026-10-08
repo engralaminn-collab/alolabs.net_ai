@@ -6,6 +6,7 @@
  * and the accessible SVG contract intact (title first, slug-prefixed IDs).
  */
 
+import { iconMarkup } from './icons'
 import { FONT_LINK, FONT_STACK, STROKE, alpha, nodeTreatment, type RoleTokens } from './tokens'
 import { RADIUS } from './tokens'
 import type { LegendItem, Prim, Scene } from './spec'
@@ -38,6 +39,8 @@ export function primToSvg(prim: Prim, uid: (n: string) => string): string {
       return `<polygon points="${prim.points}" fill="${prim.fill ?? 'none'}"${a('stroke', prim.stroke)}${a('stroke-width', prim.strokeWidth)}${a('stroke-dasharray', prim.dash)}${a('opacity', prim.opacity)}/>`
     case 'mask':
       return `<rect x="${n(prim.x)}" y="${n(prim.y)}" width="${n(prim.w)}" height="${n(prim.h)}"${a('rx', prim.rx)} fill="var(--dd-paper)"/>`
+    case 'icon':
+      return `<g color="${prim.color}">${iconMarkup(prim.name, prim.x, prim.y, prim.size)}</g>`
     case 'text':
       return `<text x="${n(prim.x)}" y="${n(prim.y)}" fill="${prim.fill ?? 'currentColor'}" font-family="${escapeXml(FONT_STACK[prim.family])}" font-size="${prim.size}" font-weight="${prim.weight ?? 400}"${prim.tracking ? ` letter-spacing="${prim.tracking}em"` : ''}${prim.italic ? ' font-style="italic"' : ''} text-anchor="${prim.anchor ?? 'start'}"${prim.opacity !== undefined ? ` opacity="${prim.opacity}"` : ''}>${escapeXml(prim.text)}</text>`
     default:
@@ -54,7 +57,7 @@ function a(name: string, value: string | number | undefined): string {
 }
 
 /** Serialise a scene to a standalone `<svg>` element. */
-export function sceneToSvg(scene: Scene): string {
+export function sceneToSvg(scene: Scene, opts: { sketchy?: boolean } = {}): string {
   const uid = (n: string) => `${scene.aria.slug}-${n}`
   const tokens: RoleTokens = resolveSkin(scene.skin, scene.theme)
   const legendH = scene.legend.length ? 44 : 0
@@ -93,9 +96,12 @@ export function sceneToSvg(scene: Scene): string {
     ${marker('arrow', tokens.muted)}
     ${marker('arrow-accent', tokens.accent)}
     ${marker('arrow-link', tokens.link)}
+    ${opts.sketchy ? `<filter id="${uid('sketchy')}" x="-2%" y="-2%" width="104%" height="104%"><feTurbulence type="fractalNoise" baseFrequency="0.02" numOctaves="2" seed="4"/><feDisplacementMap in="SourceGraphic" scale="1.5"/></filter>` : ''}
   </defs>
   <rect width="${scene.width}" height="${height}" fill="${tokens.paper}"/>
-  ${items.map((i) => primToSvg(i.prim, uid)).join('\n  ')}
+  ${opts.sketchy
+    ? `<g filter="url(#${uid('sketchy')})">${items.filter((i) => i.prim.t !== 'text').map((i) => primToSvg(i.prim, uid)).join('\n  ')}</g>\n  ${items.filter((i) => i.prim.t === 'text').map((i) => primToSvg(i.prim, uid)).join('\n  ')}`
+    : items.map((i) => primToSvg(i.prim, uid)).join('\n  ')}
   ${legend}
 </svg>`
 }

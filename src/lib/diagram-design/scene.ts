@@ -21,6 +21,7 @@ import {
   type RoleTokens,
   type TextRole,
 } from './tokens'
+import { hasIcon } from './icons'
 import {
   anchorOf,
   crisp,
@@ -34,6 +35,10 @@ import {
   type Side,
 } from './geometry'
 import type { LegendItem, NodeSpec, Prim, Scene, SceneItem } from './spec'
+import type { SkinName } from './tokens'
+
+/** Nodes shorter than this keep their icon hidden: the name would collide with it. */
+const ICON_MIN_NODE_H = 56
 
 export interface BuilderOptions {
   width: number
@@ -41,7 +46,7 @@ export interface BuilderOptions {
   legendMode?: 'nodes' | 'custom' | 'none'
   theme: 'light' | 'dark'
   variant: 'minimal' | 'editorial'
-  skin: 'editorial' | 'alo'
+  skin: SkinName
   tokens: RoleTokens
   background?: 'paper' | 'dots'
   aria: { title: string; desc: string; slug: string }
@@ -76,6 +81,17 @@ export class SceneBuilder {
   private push(layer: number, prim: Prim, id?: string) {
     this.items.push({ layer, prim, id })
     return this
+  }
+
+  /**
+   * Tag every primitive emitted since `start` with the node it belongs to, so a
+   * step-gated reveal shows and hides a node's box, mask and labels together.
+   */
+  private tagGroup(start: number, group: string | undefined) {
+    if (!group) return
+    for (let i = start; i < this.items.length; i++) {
+      if (this.items[i].group === undefined) this.items[i].group = group
+    }
   }
 
   // ── Containers ────────────────────────────────────────────────────────────
@@ -245,7 +261,18 @@ export class SceneBuilder {
   /** Full node box: mask + box + tag + name + sublabel. */
   node(
     r: Rect,
-    spec: Pick<NodeSpec, 'name' | 'sublabel' | 'tag' | 'kind'> & { id?: string },
+    spec: Pick<NodeSpec, 'name' | 'sublabel' | 'tag' | 'kind' | 'icon'> & { id?: string },
+    opts: { id?: string; layer?: number; nameFill?: string; rx?: number; weight?: number } = {},
+  ): Rect {
+    const start = this.items.length
+    const box = this.drawNode(r, spec, opts)
+    this.tagGroup(start, opts.id ?? spec.id)
+    return box
+  }
+
+  private drawNode(
+    r: Rect,
+    spec: Pick<NodeSpec, 'name' | 'sublabel' | 'tag' | 'kind' | 'icon'> & { id?: string },
     opts: { id?: string; layer?: number; nameFill?: string; rx?: number; weight?: number } = {},
   ): Rect {
     const kind = spec.kind ?? 'backend'
@@ -305,6 +332,18 @@ export class SceneBuilder {
         anchor: 'middle',
       })
     }
+    // 3b. Icon, top-right (opposite the tag). Only in boxes tall enough to keep it clear of the name.
+    if (spec.icon && hasIcon(spec.icon) && box.h >= ICON_MIN_NODE_H) {
+      const size = 16
+      this.push(layer + 2, {
+        t: 'icon',
+        name: spec.icon,
+        x: box.x + box.w - 8 - size,
+        y: box.y + 6,
+        size,
+        color: treat.stroke === 'transparent' ? this.t.ink : treat.stroke,
+      })
+    }
     // 4. Name (sans) + 5. sublabel (mono), vertically centred in what's left.
     const textTop = spec.tag ? box.y + 22 : box.y
     const hasSub = Boolean(spec.sublabel)
@@ -339,6 +378,13 @@ export class SceneBuilder {
    * A decision node (flowchart) — diamond inscribed in the given rect.
    */
   decision(r: Rect, spec: { name: string; sublabel?: string; id?: string; kind?: NodeKind }) {
+    const start = this.items.length
+    const box = this.drawDecision(r, spec)
+    this.tagGroup(start, spec.id)
+    return box
+  }
+
+  private drawDecision(r: Rect, spec: { name: string; sublabel?: string; id?: string; kind?: NodeKind }) {
     const box: Rect = { x: snap(r.x), y: snap(r.y), w: snap(r.w), h: snap(r.h) }
     const treat = nodeTreatment(spec.kind ?? 'backend', this.t)
     const cx = box.x + box.w / 2
@@ -520,10 +566,15 @@ export class SceneBuilder {
   }
 
   /** Editorial callout — italic serif, with a hairline rule. Max 2 per diagram. */
-  callout(x: number, y: number, text: string, opts: { width?: number; anchor?: 'start' | 'middle' | 'end' } = {}) {
+  callout(
+    x: number,
+    y: number,
+    text: string,
+    opts: { width?: number; anchor?: 'start' | 'middle' | 'end'; rule?: boolean } = {},
+  ) {
     const size = TYPE_RAMP.callout.size
     const w = opts.width ?? Math.max(160, measureText(text, { family: 'serif', size, tracking: 0 }))
-    return this.push(50, {
+    this.push(50, {
       t: 'text',
       x: snap(x),
       y: snap(y),
@@ -534,15 +585,43 @@ export class SceneBuilder {
       fill: this.t.muted,
       anchor: opts.anchor ?? 'start',
       italic: true,
-    }).push(50, {
-      t: 'line',
-      x1: snap(x),
-      y1: snap(y + 8),
-      x2: snap(x + w),
-      y2: snap(y + 8),
-      stroke: this.t.rule,
-      strokeWidth: STROKE.thin,
     })
+    // Hairline under the note. Notes that carry a leader drop it: the leader is the pointer.
+    if (opts.rule !== false) {
+      this.push(50, {
+        t: 'line',
+        x1: snap(x),
+        y1: snap(y + 8),
+        x2: snap(x + w),
+        y2: snap(y + 8),
+        stroke: this.t.rule,
+        strokeWidth: STROKE.thin,
+      })
+    }
+    return this
+  }
+
+  /** Read-only view of the primitives pushed so far (used by post-passes such as note leaders). */
+  peekItems(): readonly SceneItem[] {
+    return this.items
+  }
+
+  /** Dashed leader from a note to a node's bottom edge, ending in a landing dot. Solid arrows stay reserved for flow. */
+  leader(from: { x: number; y: number }, to: { x: number; y: number }) {
+    const mid = (from.y + to.y) / 2
+    this.items.push({
+      layer: 50,
+      prim: {
+        t: 'path',
+        d: `M ${r2(from.x)} ${r2(from.y)} Q ${r2(from.x)} ${r2(mid)} ${r2(to.x)} ${r2(to.y)}`,
+        fill: 'none',
+        stroke: alpha(this.t.ink, 0.4),
+        strokeWidth: STROKE.thin,
+        dash: '4,3',
+      },
+    })
+    this.items.push({ layer: 50, prim: { t: 'circle', cx: to.x, cy: to.y, r: 2, fill: this.t.ink } })
+    return this
   }
 
   axisLabel(x: number, y: number, text: string, anchor: 'start' | 'middle' | 'end' = 'middle') {
@@ -621,6 +700,10 @@ export class SceneBuilder {
 }
 
 /** Attach point for the k-th of n connectors on an edge (rule 4). */
+function r2(v: number): number {
+  return Math.round(v * 100) / 100
+}
+
 export function fanPort(r: Rect, side: Side, k: number, n: number): Port {
   const L = side === 'top' || side === 'bottom' ? r.w : r.h
   const usable = Math.max(L - CONNECTOR.portCornerMargin * 2, GRID)
