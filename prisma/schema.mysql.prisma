@@ -267,22 +267,26 @@ model Task {
   agentId      String?
   workflowId   String?
   userId       String?
+  runId        String? // AgentOSRun that created this task (precise run linkage)
   startedAt    DateTime?
   completedAt  DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  agent      Agent?      @relation(fields: [agentId], references: [id])
-  workflow   Workflow?   @relation(fields: [workflowId], references: [id])
-  steps      TaskStep[]
-  outputs    Output[]
-  taskErrors TaskError[]
-  agentRuns  AgentRun[]
-  skillRuns  SkillRun[]
-  artifacts  Artifact[]
+  agent          Agent?          @relation(fields: [agentId], references: [id])
+  workflow       Workflow?       @relation(fields: [workflowId], references: [id])
+  steps          TaskStep[]
+  outputs        Output[]
+  outputVersions OutputVersion[]
+  taskErrors     TaskError[]
+  agentRuns      AgentRun[]
+  skillRuns      SkillRun[]
+  artifacts      Artifact[]
 
   @@index([agentId])
   @@index([workflowId])
+  @@index([runId])
+  @@index([status])
 }
 
 model TaskStep {
@@ -346,7 +350,7 @@ model Approval {
   title        String
   description  String?   @db.LongText
   requestJson  String    @default("{}") @db.LongText
-  status       String    @default("pending") // pending, approved, rejected, expired
+  status       String    @default("pending") // pending, approved, rejected, expired, cancelled
   requestedBy  String?
   reviewedBy   String?   @db.LongText
   reviewedAt   DateTime?
@@ -354,6 +358,7 @@ model Approval {
   riskLevel    String    @default("medium") @db.LongText
   executionId  String?
   companyId    String?
+  expiresAt    DateTime? // pending approvals past this instant are expired, never executed
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
@@ -712,6 +717,7 @@ model Company {
   agentLearningSessions AgentLearningSession[]
   projects              Project[]
   artifacts             Artifact[]
+  providerConfigs       AIProviderConfig[]
 }
 
 model CompanyUser {
@@ -1322,22 +1328,30 @@ model JobQueue {
 }
 
 model QueueItem {
-  id          String    @id @default(cuid())
-  queueId     String
-  jobId       String? // references AgentRun, SkillRun, WorkflowRun, or generic job
-  jobType     String    @db.LongText // agent_run, skill_run, workflow_run, email, report, maintenance
-  priority    Int       @default(0)
-  payload     String    @default("{}") @db.LongText
-  status      String    @default("queued") // queued, processing, completed, failed, cancelled
-  attempts    Int       @default(0)
-  maxAttempts Int       @default(3)
-  error       String?   @db.LongText
-  startedAt   DateTime?
-  completedAt DateTime?
-  scheduledAt DateTime?
-  createdAt   DateTime  @default(now())
+  id             String    @id @default(cuid())
+  queueId        String
+  jobId          String? // references AgentRun, SkillRun, WorkflowRun, or generic job
+  jobType        String    @db.LongText // agent_run, skill_run, workflow_run, email, report, maintenance
+  priority       Int       @default(0)
+  payload        String    @default("{}") @db.LongText
+  status         String    @default("queued") // queued, processing, completed, failed, cancelled
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(3)
+  error          String?   @db.LongText
+  result         String?   @db.LongText // handler result (payload is preserved for audit)
+  idempotencyKey String?   @unique // duplicate-delivery prevention
+  lockedBy       String? // worker id holding the processing lease
+  lockExpiresAt  DateTime? // lease expiry; expired leases are reclaimed
+  heartbeatAt    DateTime?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  scheduledAt    DateTime?
+  createdAt      DateTime  @default(now())
 
   queue JobQueue @relation(fields: [queueId], references: [id], onDelete: Cascade)
+
+  @@index([queueId, status, scheduledAt])
+  @@index([status, lockExpiresAt])
 }
 
 // ========== TOKEN BUDGETING ==========
@@ -3221,14 +3235,16 @@ model AgentMessage {
   @@index([executionId, createdAt])
 }
 
+// ─── AgentOS: Projects, Artifacts, Run Events ────────────────────────────────
+// Added by the AgentOS transformation. Additive only — no existing model changed.
 
 model Project {
   id          String   @id @default(cuid())
   name        String
-  objective   String @db.LongText   @default("")
-  description String? @db.LongText
+  objective   String   @default("") @db.LongText
+  description String?  @db.LongText
   status      String   @default("active") // active, paused, completed, archived
-  settings    String @db.LongText   @default("{}")
+  settings    String   @default("{}") @db.LongText
   companyId   String?
   ownerId     String?
   createdAt   DateTime @default(now())
@@ -3248,19 +3264,19 @@ model Artifact {
   id          String   @id @default(cuid())
   name        String
   type        String   @default("text") // text, markdown, pdf, docx, xlsx, pptx, csv, json, image, video, audio, code, report
-  content     String @db.LongText   @default("")
-  storagePath String? @db.LongText
+  content     String   @default("") @db.LongText
+  storagePath String?  @db.LongText
   mimeType    String   @default("text/plain")
   size        Int      @default(0)
   checksum    String   @default("")
   version     Int      @default(1)
-  metadata    String @db.LongText   @default("{}")
+  metadata    String   @default("{}") @db.LongText
   projectId   String?
   taskId      String?
   runId       String?
   agentId     String?
   companyId   String?
-  createdBy   String? @db.LongText
+  createdBy   String?  @db.LongText
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -3283,7 +3299,7 @@ model RunEvent {
   source    String   @default("system")
   agentId   String?
   taskId    String?
-  data      String @db.LongText   @default("{}")
+  data      String   @default("{}") @db.LongText
   createdAt DateTime @default(now())
 
   @@index([runId])
@@ -3293,26 +3309,138 @@ model RunEvent {
 
 model AgentOSRun {
   id          String    @id @default(cuid())
-  objective   String @db.LongText
-  status      String   @default("queued") // queued, planning, running, waiting_approval, completed, failed, cancelled
-  plan        String @db.LongText   @default("[]") // JSON array of planned steps
-  summary     String? @db.LongText
-  error       String? @db.LongText
+  objective   String    @db.LongText
+  status      String    @default("queued") // queued, planning, running, waiting_approval, completed, failed, cancelled
+  plan        String    @default("[]") @db.LongText // JSON array of planned steps
+  summary     String?   @db.LongText
+  error       String?   @db.LongText
   commandId   String?
   projectId   String?
   workflowId  String?
   companyId   String?
   userId      String?
-  priority    String   @default("normal")
+  priority    String    @default("normal")
+  checkpoint  String    @default("{}") @db.LongText // JSON step outcomes; lets a run resume after a restart
+  attempts    Int       @default(0) // number of times a worker (re)started this run
   startedAt   DateTime?
   completedAt DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@index([companyId])
   @@index([userId])
   @@index([projectId])
   @@index([workflowId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ─── AgentOS hardening (2026-10-09) ──────────────────────────────────────────
+
+/// Every generated/repaired output of a task, kept as an immutable version so
+/// QC failures and repairs preserve evidence instead of overwriting it.
+model OutputVersion {
+  id           String   @id @default(cuid())
+  taskId       String
+  runId        String?
+  version      Int
+  content      String   @db.LongText
+  model        String?
+  reason       String   @default("initial") // initial, repair, manual
+  qcPassed     Boolean?
+  qcScore      Float?
+  qcIssues     String   @default("[]") @db.LongText
+  assessmentId String?
+  createdAt    DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, version])
+  @@index([runId])
+}
+
+/// Configured AI provider (platform-wide when companyId is null). The API key
+/// is stored AES-256-GCM encrypted under SECRETS_MASTER_KEY; only a fingerprint
+/// is ever returned to clients.
+model AIProviderConfig {
+  id                  String    @id @default(cuid())
+  companyId           String?
+  provider            String // openai-compatible, anthropic, ollama, openrouter, groq, deepseek, mistral, zai-sdk
+  name                String
+  baseUrl             String?   @db.LongText
+  encryptedApiKey     String?   @db.LongText
+  keyFingerprint      String?
+  models              String    @default("[]") @db.LongText // JSON array of { id, capabilities, contextLength, costPerMillionTokens }
+  isEnabled           Boolean   @default(true)
+  priority            Int       @default(100)
+  timeoutMs           Int       @default(60000)
+  maxRetries          Int       @default(2)
+  lastHealthStatus    String? // healthy, degraded, unreachable, unauthorized
+  lastHealthAt        DateTime?
+  lastHealthLatencyMs Int?
+  lastError           String?   @db.LongText
+  createdBy           String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, name])
+  @@index([provider])
+  @@index([isEnabled, priority])
+}
+
+/// One row per model-router decision (success or failure) for observability,
+/// cost tracking and fallback analysis.
+model ModelRoutingDecision {
+  id               String   @id @default(cuid())
+  runId            String?
+  taskId           String?
+  companyId        String?
+  agentId          String?
+  requestedModel   String
+  taskType         String?
+  selectedProvider String?
+  selectedModel    String?
+  reason           String   @default("")
+  candidates       String   @default("[]") @db.LongText
+  attempts         Int      @default(1)
+  fallbackFrom     String?
+  success          Boolean  @default(false)
+  errorCode        String?
+  errorMessage     String?  @db.LongText
+  latencyMs        Int?
+  promptTokens     Int?
+  completionTokens Int?
+  costUsd          Float?
+  createdAt        DateTime @default(now())
+
+  @@index([runId])
+  @@index([companyId, createdAt])
+  @@index([selectedProvider])
+}
+
+/// Backup ledger. A backup is only "verified" after its checksums were
+/// re-validated and (for SQLite) an integrity check of the copy passed.
+model BackupRecord {
+  id              String    @id @default(cuid())
+  backupId        String    @unique
+  kind            String    @default("manual") // manual, scheduled
+  status          String    @default("created") // created, verified, failed, restore_tested
+  location        String    @db.LongText
+  manifest        String    @default("{}") @db.LongText
+  checksum        String    @default("")
+  sizeBytes       BigInt    @default(0)
+  appVersion      String?
+  commit          String?
+  schemaVersion   String?
+  verifiedAt      DateTime?
+  restoreTestedAt DateTime?
+  retentionUntil  DateTime?
+  createdBy       String?
+  error           String?   @db.LongText
+  createdAt       DateTime  @default(now())
+
   @@index([status])
   @@index([createdAt])
 }

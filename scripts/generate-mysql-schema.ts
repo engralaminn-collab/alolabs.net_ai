@@ -68,6 +68,17 @@ const SHORT_EXACT_NAMES = new Set([
   'alertType', 'checkType', 'metric', 'sourceSystem', 'targetSystem', 'entityType',
 ]);
 
+// Model-scoped short fields (AgentOS hardening, 2026-10-09). These are NEW
+// tables/columns only — existing LONGTEXT columns on other models must never be
+// narrowed to VARCHAR(191), which could truncate production data.
+const MODEL_SHORT_FIELDS: Record<string, Set<string>> = {
+  OutputVersion: new Set(['reason', 'model', 'assessmentId']),
+  AIProviderConfig: new Set(['lastHealthStatus', 'keyFingerprint', 'createdBy']),
+  ModelRoutingDecision: new Set(['requestedModel', 'taskType', 'selectedModel', 'reason', 'fallbackFrom', 'errorCode']),
+  BackupRecord: new Set(['kind', 'appVersion', 'commit', 'schemaVersion', 'createdBy']),
+  QueueItem: new Set(['lockedBy', 'idempotencyKey']),
+};
+
 const lines = mysqlSchema.split('\n');
 const processedLines: string[] = [];
 
@@ -106,7 +117,8 @@ for (const line of lines) {
       const isUniqueOrId = trimmed.includes('@id') || trimmed.includes('@unique');
       const isIndexed = modelIndices[currentModel]?.has(fieldName);
       const isIdField = fieldName.endsWith('Id') || fieldName.endsWith('ID');
-      const isShort = SHORT_EXACT_NAMES.has(fieldName) || isIdField;
+      const isShort = SHORT_EXACT_NAMES.has(fieldName) || isIdField ||
+        (MODEL_SHORT_FIELDS[currentModel]?.has(fieldName) ?? false);
 
       // If field is used in an index, unique constraint, or is an ID/short string,
       // it MUST remain VARCHAR(191)

@@ -1,5 +1,6 @@
 import { headers } from 'next/headers'
 import { db } from './db'
+import { verifySessionToken } from './auth'
 
 export interface AuthenticatedUser {
   userId: string
@@ -8,10 +9,6 @@ export interface AuthenticatedUser {
   name: string
   companyId?: string
   companyRole?: string
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export async function getAuthUser(): Promise<AuthenticatedUser | null> {
@@ -23,17 +20,10 @@ export async function getAuthUser(): Promise<AuthenticatedUser | null> {
   if (!token) return null
 
   try {
-    const session = await db.settings.findUnique({ where: { key: `session:${token}` } })
+    // Single source of truth for session validity (existence, expiry, idle timeout).
+    const session = await verifySessionToken(token)
     if (!session) return null
-
-    const parsed: unknown = JSON.parse(session.value)
-    if (!isRecord(parsed)) return null
-    const sessionUserId = typeof parsed.userId === 'string'
-      ? parsed.userId
-      : typeof parsed.id === 'string'
-        ? parsed.id
-        : undefined
-    if (!sessionUserId) return null
+    const sessionUserId = session.userId
 
     const user = await db.user.findUnique({
       where: { id: sessionUserId },

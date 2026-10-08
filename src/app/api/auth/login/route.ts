@@ -137,7 +137,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Create real session token stored in Settings table
-    const token = await createSessionToken(user.id);
+    const token = await createSessionToken(user.id, { method: 'password' });
 
     // Update last login
     await db.user.update({

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { hashPassword } from '@/lib/auth';
+import { hashPassword, revokeUserSessions } from '@/lib/auth';
 import crypto from 'crypto';
 
 const RESET_TOKEN_EXPIRY_MS = 900_000; // 15 minutes
@@ -65,15 +65,7 @@ export async function POST(request: NextRequest) {
       await db.settings.delete({ where: { key: `password_reset:${token}` } });
 
       // Invalidate all existing sessions
-      const sessions = await db.settings.findMany({ where: { key: { startsWith: 'session:' } } });
-      for (const session of sessions) {
-        try {
-          const data = JSON.parse(session.value);
-          if (data.userId === user.id) {
-            await db.settings.delete({ where: { id: session.id } });
-          }
-        } catch { /* skip malformed */ }
-      }
+      await revokeUserSessions(user.id);
 
       await db.auditLog.create({
         data: { userId: user.id, action: 'user.password_reset_completed', resource: 'User', details: '{}' },

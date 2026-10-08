@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { db } from '@/lib/db';
-import { hashPassword } from '@/lib/auth';
+import { createSessionToken, hashPassword } from '@/lib/auth';
 
 /**
  * Exchange authorization code for OAuth tokens with the provider.
@@ -288,19 +288,8 @@ export async function POST(
       }
     }
 
-    const sessionToken = crypto.randomBytes(24).toString('hex');
-    await db.settings.upsert({
-      where: { key: `session:${sessionToken}` },
-      update: {
-        value: JSON.stringify({ userId: user.id }),
-        updatedAt: new Date(),
-      },
-      create: {
-        key: `session:${sessionToken}`,
-        value: JSON.stringify({ userId: user.id }),
-        type: 'json',
-      },
-    });
+    // Sessions carry expiry + idle timeout (see src/lib/auth.ts).
+    const sessionToken = await createSessionToken(user.id, { method: `oauth:${provider}` });
 
     await db.user.update({
       where: { id: user.id },
