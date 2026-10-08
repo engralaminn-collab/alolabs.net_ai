@@ -24,10 +24,29 @@ case "${DATABASE_URL}" in
     [[ "${db}" = /* ]] || db="${APP_DIR}/${db#./}"
     db="$(readlink -f "${db}")"
     [[ -f "${db}" && -s "${db}" ]] || { echo "ERROR: active SQLite database is missing or empty" >&2; exit 1; }
-    [[ "$(sqlite3 "${db}" 'PRAGMA integrity_check;')" == "ok" ]] || { echo "ERROR: SQLite integrity check failed" >&2; exit 1; }
-    sqlite3 "${db}" ".backup '${dest}/database.sqlite'"
-    [[ -s "${dest}/database.sqlite" ]] || { echo "ERROR: SQLite backup verification failed" >&2; exit 1; }
-    sqlite3 "${dest}/database.sqlite" 'PRAGMA integrity_check;' | grep -qx ok
+    # The online SQLite backup API includes committed WAL data. Python is an
+    # explicit fallback for hosts without the sqlite3 command-line program.
+    if command -v sqlite3 >/dev/null; then
+      [[ "$(sqlite3 "${db}" 'PRAGMA integrity_check;')" == "ok" ]] || { echo "ERROR: SQLite integrity check failed" >&2; exit 1; }
+      sqlite3 "${db}" ".backup '${dest}/database.sqlite'"
+      [[ -s "${dest}/database.sqlite" ]] || { echo "ERROR: SQLite backup verification failed" >&2; exit 1; }
+      sqlite3 "${dest}/database.sqlite" 'PRAGMA integrity_check;' | grep -qx ok
+    else
+      command -v python3 >/dev/null || { echo "ERROR: SQLite backup requires sqlite3 or python3" >&2; exit 1; }
+      python3 - "${db}" "${dest}/database.sqlite" <<'PYSQL'
+import sqlite3, sys
+from pathlib import Path
+source, destination = sys.argv[1:]
+with sqlite3.connect(f'file:{source}?mode=ro', uri=True) as original:
+    if original.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+        raise RuntimeError('SQLite source integrity check failed')
+    with sqlite3.connect(destination) as backup:
+        original.backup(backup)
+with sqlite3.connect(f'file:{destination}?mode=ro', uri=True) as backup:
+    if backup.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+        raise RuntimeError('SQLite backup integrity check failed')
+PYSQL
+    fi
     ;;
   mysql://*|mariadb://*)
     command -v mysqldump >/dev/null || { echo "ERROR: mysqldump is unavailable" >&2; exit 1; }
@@ -46,19 +65,52 @@ case "${DATABASE_URL}" in
   *) echo "ERROR: unsupported production database provider" >&2; exit 1 ;;
 esac
 
-# Preserve application-owned storage when present. This archive never replaces live files.
+# Preserve the provider's data AND .metadata ownership records. The previous
+# archive omitted the local provider's default `uploads/` directory.
 storage_paths=()
-for candidate in storage data public/uploads; do
+for candidate in storage data public/uploads uploads; do
   [[ -d "${APP_DIR}/${candidate}" ]] && storage_paths+=("${candidate}")
 done
+external_storage=false
+if [[ "${STORAGE_PROVIDER:-local}" == local ]]; then
+  configured="${STORAGE_LOCAL_PATH:-./uploads}"
+  [[ "${configured}" = /* ]] || configured="${APP_DIR}/${configured#./}"
+  configured="$(realpath -m "${configured}")"
+  if [[ -d "${configured}" ]]; then
+    relative="$(realpath --relative-to="${APP_DIR}" "${configured}")"
+    if [[ "${relative}" == ../* || "${relative}" == .. ]]; then
+      [[ "${configured}" != "${BACKUP_DIR}"* ]] || { echo "ERROR: storage points into backup directory" >&2; exit 1; }
+      tar -C "${configured}" -czf "${dest}/configured-storage.tar.gz" .
+      tar -tzf "${dest}/configured-storage.tar.gz" >/dev/null
+      external_storage=true
+    elif [[ "${relative}" != . ]]; then
+      already=false
+      for candidate in "${storage_paths[@]}"; do
+        [[ "${candidate}" == "${relative}" || "${relative}" == "${candidate}/"* ]] && already=true
+      done
+      [[ "${already}" == true ]] || storage_paths+=("${relative}")
+    fi
+  fi
+fi
 if (( ${#storage_paths[@]} > 0 )); then
   tar -C "${APP_DIR}" -czf "${dest}/application-storage.tar.gz" "${storage_paths[@]}"
   tar -tzf "${dest}/application-storage.tar.gz" >/dev/null
 fi
 
-printf '{"created_at":"%s","commit":"%s","database_backup_verified":true,"storage_included":%s}\n' \
+# Checksums detect corruption of the captured files; a separate, isolated
+# restore and application smoke test are still mandatory for release.
+(
+  cd "${dest}"
+  for file in database.sqlite database.sql.gz application-storage.tar.gz configured-storage.tar.gz; do
+    [[ ! -f "${file}" ]] || sha256sum "${file}"
+  done
+) > "${dest}/SHA256SUMS"
+[[ -s "${dest}/SHA256SUMS" ]] || { echo "ERROR: no backup checksum was recorded" >&2; exit 1; }
+(cd "${dest}" && sha256sum -c SHA256SUMS) >/dev/null
+printf '{"created_at":"%s","commit":"%s","database_backup_verified":true,"storage_included":%s,"external_storage_included":%s,"checksum_manifest":"SHA256SUMS","restore_tested":false}\n' \
   "$(date -u +%FT%TZ)" "$(cat "${dest}/commit.txt")" \
-  "$( (( ${#storage_paths[@]} > 0 )) && echo true || echo false )" > "${dest}/manifest.json"
+  "$( (( ${#storage_paths[@]} > 0 )) && echo true || echo false )" \
+  "${external_storage}" > "${dest}/manifest.json"
 chmod -R go-rwx "${dest}"
 
 # Conservative retention: retain at least the 14 newest verified backups and

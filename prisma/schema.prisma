@@ -27,6 +27,7 @@ model User {
   commands              Command[]
   managedDepartments    Department[]
   collaborationSessions CollaborationSession[]
+  projects              Project[]
 }
 
 model Role {
@@ -278,6 +279,7 @@ model Task {
   taskErrors TaskError[]
   agentRuns  AgentRun[]
   skillRuns  SkillRun[]
+  artifacts  Artifact[]
 
   @@index([agentId])
   @@index([workflowId])
@@ -708,6 +710,8 @@ model Company {
   recoveryEvents        AgentRecoveryEvent[]
   agentExecutions       AgentExecution[]
   agentLearningSessions AgentLearningSession[]
+  projects              Project[]
+  artifacts             Artifact[]
 }
 
 model CompanyUser {
@@ -3215,4 +3219,102 @@ model AgentMessage {
   execution AgentExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
 
   @@index([executionId, createdAt])
+}
+
+// ─── AgentOS: Projects, Artifacts, Run Events ────────────────────────────────
+// Added by the AgentOS transformation. Additive only — no existing model changed.
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  objective   String   @default("")
+  description String?
+  status      String   @default("active") // active, paused, completed, archived
+  settings    String   @default("{}")
+  companyId   String?
+  ownerId     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company   Company?   @relation(fields: [companyId], references: [id])
+  owner     User?      @relation(fields: [ownerId], references: [id])
+  artifacts Artifact[]
+
+  @@index([companyId])
+  @@index([ownerId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Artifact {
+  id          String   @id @default(cuid())
+  name        String
+  type        String   @default("text") // text, markdown, pdf, docx, xlsx, pptx, csv, json, image, video, audio, code, report
+  content     String   @default("")
+  storagePath String?
+  mimeType    String   @default("text/plain")
+  size        Int      @default(0)
+  checksum    String   @default("")
+  version     Int      @default(1)
+  metadata    String   @default("{}")
+  projectId   String?
+  taskId      String?
+  runId       String?
+  agentId     String?
+  companyId   String?
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project? @relation(fields: [projectId], references: [id])
+  task    Task?    @relation(fields: [taskId], references: [id])
+  company Company? @relation(fields: [companyId], references: [id])
+
+  @@index([projectId])
+  @@index([taskId])
+  @@index([runId])
+  @@index([companyId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model RunEvent {
+  id        String   @id @default(cuid())
+  runId     String
+  type      String // run.started, plan.created, task.queued, task.started, task.completed, task.failed, agent.selected, model.selected, tool.started, tool.completed, qc.passed, qc.failed, repair.started, approval.requested, artifact.created, run.completed, run.failed
+  source    String   @default("system")
+  agentId   String?
+  taskId    String?
+  data      String   @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([runId])
+  @@index([runId, createdAt])
+  @@index([type])
+}
+
+model AgentOSRun {
+  id          String    @id @default(cuid())
+  objective   String
+  status      String   @default("queued") // queued, planning, running, waiting_approval, completed, failed, cancelled
+  plan        String   @default("[]") // JSON array of planned steps
+  summary     String?
+  error       String?
+  commandId   String?
+  projectId   String?
+  workflowId  String?
+  companyId   String?
+  userId      String?
+  priority    String   @default("normal")
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([companyId])
+  @@index([userId])
+  @@index([projectId])
+  @@index([workflowId])
+  @@index([status])
+  @@index([createdAt])
 }

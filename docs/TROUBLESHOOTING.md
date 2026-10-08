@@ -1,3 +1,24 @@
+# AgentOS troubleshooting
+
+| Symptom | Diagnosis / recovery |
+|---|---|
+| Run fails with `Configuration required` | No AI provider configured/reachable. Configure a supported provider (or Ollama), verify `/api/v1/health`, then submit a new run. Do not replay a failed run as success. |
+| `/api/v1/health` returns 503 | Inspect `checks`: DB and queue may be healthy while model router is degraded. This is expected in the sandbox. |
+| Login fails after seed | `SEED_ADMIN_PASSWORD` must be set; seed now uses bcrypt. Rerun seed to repair the old sandbox's SHA-256 hash only. Do not reset a real user's password from the seed script. |
+| `GET /api/runs/:id` is 401/403 | Send session Bearer token; select a company membership. v1 API-key scopes are separate from web-session auth. |
+| SSE seems idle | Check persisted `RunEvent` rows and poll run detail. SSE live fanout is in-process; cross-replica event fanout is not yet available. |
+| Download link returns 401 | The UI uses a token-bearing fetch and blob download. Plain links cannot send the Bearer header. |
+| Build has duplicate `.next/dev/types` identifiers | Stop dev server, remove only `.next/dev`, then build again. Do not remove application source/DB. |
+| Standalone login returns 401 while dev works | A relative SQLite URL may resolve to the build's copied DB. Set an absolute external-volume `DATABASE_URL` for standalone. |
+| Workflow/approval stays paused | Automatic resume after human approval is not implemented; consult the final audit. |
+| Prisma engine CDN unavailable | Sandbox-specific `db:generate:client-engine` and `db:push:sqlite` are available. Production migrations still require review. |
+
+For legacy endpoints see `docs/TROUBLESHOOTING.md` and the final audit.
+
+---
+
+## Legacy troubleshooting reference (preserved)
+
 # ALO Labs AIOS — Troubleshooting Guide
 
 > **Version:** 0.2.0  

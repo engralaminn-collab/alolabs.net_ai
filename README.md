@@ -10,6 +10,22 @@
 
 ---
 
+> **AgentOS transformation status (2026-10-08): experimental / NOT production-ready.**
+> The existing README below describes the larger legacy codebase and contains
+> historical counts/claims that have not been fully re-audited. Current schema:
+> **175 Prisma models**. Current checks: typecheck, lint (1 warning),
+> **724 tests across 51 files**, local production build/start and SQLite smoke. A successful
+> *live AI* run requires a configured provider and remains **NOT VERIFIED**
+> in this environment. Without one, runs fail honestly with
+> **Configuration required**. See [final audit](ALO_LABS_AGENTOS_FINAL_AUDIT.md)
+> and [AgentOS guide](docs/AGENTOS_GUIDE.md) before any deployment.
+>
+> New entry points: `POST /api/runs`, `GET /api/runs/:id`, `GET /api/runs/:id/events`
+> (SSE), `POST /api/workflows/:id/run`, and the versioned `/api/v1/*` surface.
+> Start a local SQLite sandbox with `npm run db:push:sqlite`,
+> `SEED_ADMIN_PASSWORD=<strong-unique-password> npm run seed:agentos`,
+> and `npm run dev` (port 3011). Never use the checked-in examples as secrets.
+
 ## Features
 
 - **251 REST API Routes** — Comprehensive backend covering agents, CRM, workflows, RAG, billing, social media, and more

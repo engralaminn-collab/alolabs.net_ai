@@ -13,6 +13,7 @@ vi.mock('@/lib/db', () => ({
       findMany: vi.fn().mockResolvedValue([]),
       findUnique: vi.fn().mockResolvedValue(null),
       update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       groupBy: vi.fn().mockResolvedValue([]),
     },
   },
@@ -155,14 +156,15 @@ describe('Job Queue', () => {
       mockedDb.jobQueue.findUnique.mockResolvedValue({ id: 'queue-1' });
       const item = makeQueueItem({ id: 'item-99' });
       mockedDb.queueItem.findFirst.mockResolvedValue(item);
-      mockedDb.queueItem.update.mockResolvedValue({ ...item, status: 'processing', startedAt: new Date(), attempts: 1 });
+      mockedDb.queueItem.updateMany.mockResolvedValue({ count: 1 });
+      mockedDb.queueItem.findUnique.mockResolvedValue({ ...item, status: 'processing', startedAt: new Date(), attempts: 1 });
 
       const result = await dequeue('emails');
       expect(result).not.toBeNull();
       expect(result!.id).toBe('item-99');
-      expect(mockedDb.queueItem.update).toHaveBeenCalledWith(
+      expect(mockedDb.queueItem.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'item-99' },
+          where: { id: 'item-99', status: 'queued' },
           data: expect.objectContaining({ status: 'processing' }),
         }),
       );

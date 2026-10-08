@@ -38,6 +38,7 @@ describe('LocalStorageProvider', () => {
   let provider: LocalStorageProvider;
 
   beforeEach(() => {
+    process.env.STORAGE_SIGNING_SECRET = 'unit-test-signing-secret-not-for-production';
     vi.clearAllMocks();
     mockReadFile.mockResolvedValue(Buffer.from('test-file-content'));
     mockReaddir.mockResolvedValue([]);
@@ -90,13 +91,13 @@ describe('LocalStorageProvider', () => {
       expect(result.size).toBe(buffer.length);
       expect(result.url).toContain('/api/storage/files/');
       expect(result.createdAt).toBeInstanceOf(Date);
-      expect(result.companyId).toBe('default');
+      expect(result.companyId).toBe(''); // unowned objects are not tenant-accessible
     });
 
     it('should upload to a custom folder when specified', async () => {
       const buffer = Buffer.from('test data');
       const result = await provider.upload(buffer, 'doc.pdf', { folder: 'documents' });
-      expect(result.uploadedBy).toBe('documents');
+      expect(result.uploadedBy).toBe('system'); // folder names are not owner identities
       expect(mockMkdir).toHaveBeenCalledWith(
         expect.stringContaining('documents'),
         { recursive: true },
@@ -119,7 +120,11 @@ describe('LocalStorageProvider', () => {
     it('should call writeFile with sanitized filename', async () => {
       const buffer = Buffer.from('data');
       await provider.upload(buffer, 'test.txt');
-      expect(mockWriteFile).toHaveBeenCalledTimes(1);
+      expect(mockWriteFile).toHaveBeenCalledTimes(2); // bytes and private owner metadata
+      expect(mockWriteFile).toHaveBeenCalledWith(
+        expect.stringContaining('.metadata'), expect.any(String),
+        expect.objectContaining({ flag: 'wx', mode: 0o600 }),
+      );
     });
   });
 
@@ -206,13 +211,13 @@ describe('LocalStorageProvider', () => {
       expect(files).toHaveLength(0);
     });
 
-    it('should return file list from directory entries', async () => {
+    it('must hide filesystem entries that lack an ownership record', async () => {
       mockReaddir.mockResolvedValue([
         { name: 'test.txt', isFile: () => true, isDirectory: () => false },
         { name: 'photo.png', isFile: () => true, isDirectory: () => false },
       ]);
       const files = await provider.list();
-      expect(files).toHaveLength(2);
+      expect(files).toHaveLength(0);
     });
 
     it('should return empty array when directory does not exist', async () => {

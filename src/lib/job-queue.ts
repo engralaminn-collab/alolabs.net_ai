@@ -147,16 +147,14 @@ export async function dequeue(queueName: string): Promise<QueueItemData | null> 
 
   if (!item) return null;
 
-  const updated = await db.queueItem.update({
-    where: { id: item.id },
-    data: {
-      status: 'processing',
-      startedAt: now,
-      attempts: { increment: 1 },
-    },
+  // Claim atomically: another replica may have selected the same row.
+  const claim = await db.queueItem.updateMany({
+    where: { id: item.id, status: 'queued' },
+    data: { status: 'processing', startedAt: now, attempts: { increment: 1 } },
   });
-
-  return toQueueItemData(updated);
+  if (claim.count === 0) return null;
+  const updated = await db.queueItem.findUnique({ where: { id: item.id } });
+  return updated ? toQueueItemData(updated) : null;
 }
 
 /**
@@ -261,16 +259,19 @@ export async function processQueue(
 
   for (const batch of batches) {
     const batchPromises = batch.map(async (job) => {
-      // Mark as processing (attempts already incremented by dequeue, but processQueue
-      // fetches jobs directly, so we increment here)
-      await db.queueItem.update({
-        where: { id: job.id },
+      // Atomic compare-and-set prevents two workers/replicas (or overlapping
+      // polls) from executing the same job concurrently.
+      const claim = await db.queueItem.updateMany({
+        where: { id: job.id, status: 'queued' },
         data: {
           status: 'processing',
           startedAt: new Date(),
           attempts: { increment: 1 },
         },
       });
+      if (claim.count === 0) {
+        return { id: job.id, status: 'skipped', error: 'Job already claimed by another worker' };
+      }
 
       try {
         const result = await handler({ ...job, status: 'processing', startedAt: new Date() });

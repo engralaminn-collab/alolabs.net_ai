@@ -37,6 +37,8 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
+      - name: Production dependency advisory gate (blocks deployment)
+        run: npm audit --omit=dev --audit-level=moderate
       - name: Generate CI Prisma client
         run: bun run db:generate
       - name: Prisma delegate/schema reconciliation

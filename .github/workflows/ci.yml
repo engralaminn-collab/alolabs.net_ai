@@ -36,6 +36,8 @@ jobs:
           bunx prisma --version
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
+      - name: Production dependency advisory gate
+        run: npm audit --omit=dev --audit-level=moderate
       - name: Generate test Prisma client
         run: bun run db:generate
       - name: Prisma delegate/schema reconciliation
