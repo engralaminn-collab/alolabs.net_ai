@@ -7,20 +7,26 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthUser } from '@/lib/api-auth';
+import { requireCompanyAuth } from '@/lib/api-auth';
 import { getOrchestrator } from '@/lib/orchestrator';
 import { z } from 'zod';
 
 const ExecuteSchema = z.object({
-  task: z.string().min(1, 'Task is required').max(10000),
-  conversationId: z.string().optional(),
-  preferredAgentId: z.string().optional(),
+  task: z.string().trim().min(1, 'Task is required').max(10000),
+  conversationId: z.string().min(1).optional(),
+  preferredAgentId: z.string().min(1).optional(),
 });
+
+function errorResponse(error: unknown) {
+  const message = error instanceof Error ? error.message : 'Internal server error';
+  const status = message === 'Unauthorized' ? 401 : message === 'Forbidden' ? 403 : 500;
+  return NextResponse.json({ error: message }, { status });
+}
 
 // ─── POST: Execute a task through the unified orchestrator ─────────
 export async function POST(request: NextRequest) {
   try {
-    const user = await getAuthUser() || { userId: 'anonymous', role: 'viewer' };
+    const user = await requireCompanyAuth();
     const body = await request.json();
     const parsed = ExecuteSchema.safeParse(body);
 
@@ -39,6 +45,7 @@ export async function POST(request: NextRequest) {
     const result = await orchestrator.execute({
       task,
       userId: user.userId,
+      companyId: user.companyId,
       conversationId,
       preferredAgentId,
     });
@@ -46,21 +53,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: true, data: result });
   } catch (error) {
     console.error('[/api/enterprise/orchestrator POST]', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Internal server error' },
-      { status: 500 },
-    );
+    return errorResponse(error);
   }
 }
 
 // ─── GET: Orchestrator stats and recent activity ───────────────────
 export async function GET() {
   try {
+    const user = await requireCompanyAuth();
     const orchestrator = getOrchestrator();
 
     const [stats, recentRuns] = await Promise.all([
-      orchestrator.getStats(),
-      orchestrator.getRecentRuns(8),
+      orchestrator.getStats(user.companyId),
+      orchestrator.getRecentRuns(8, user.companyId),
     ]);
 
     return NextResponse.json({
@@ -69,9 +74,6 @@ export async function GET() {
     });
   } catch (error) {
     console.error('[/api/enterprise/orchestrator GET]', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Internal server error' },
-      { status: 500 },
-    );
+    return errorResponse(error);
   }
 }

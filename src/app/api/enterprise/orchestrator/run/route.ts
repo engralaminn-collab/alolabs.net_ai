@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/api-auth';
+import { requireCompanyAuth } from '@/lib/api-auth';
 import { getOrchestrator } from '@/lib/multi-agent-orchestrator';
 import { z } from 'zod';
 
@@ -28,7 +28,7 @@ const RunOrchestrationSchema = z.object({
   ]),
   steps: z.array(StepSchema).min(1, 'At least one step is required'),
   input: z.string().min(1, 'input is required'),
-  context: z.record(z.unknown()).optional(),
+  context: z.record(z.string(), z.unknown()).optional(),
   departmentId: z.string().optional(),
   priority: z.enum(['P0', 'P1', 'P2', 'P3', 'P4', 'P5']).optional(),
   parallelConfig: z.object({
@@ -43,7 +43,7 @@ const RunOrchestrationSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    const user = await requireAuth();
+    const user = await requireCompanyAuth();
 
     const body = await request.json();
     const parsed = RunOrchestrationSchema.safeParse(body);
@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
       type,
       steps,
       input,
-      companyId: user.companyId ?? 'default-company',
+      companyId: user.companyId,
       userId: user.userId,
       departmentId,
       priority,

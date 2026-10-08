@@ -44,6 +44,52 @@ interface Agent {
   purpose?: string
 }
 
+interface PipelineMetadata {
+  taskClassification?: string
+  validationScore?: number
+  validationPassed?: boolean
+  ragResults?: number
+}
+
+interface AgentDetail {
+  success: boolean
+  stats: {
+    totalRuns: number
+    successRate: number
+    avgLatency: number
+    avgConfidence: number
+    avgTokens: number
+    totalTokens: number
+    ragUsageRate: number
+    modelUsage: Record<string, number>
+    lastRunAt: string | null
+  }
+  health: {
+    agentId: string
+    status: string
+    healthScore: number
+    successRate: number
+    avgLatencyMs: number
+    errorRate: number
+    totalExecutions: number
+    lastExecutionAt?: string
+    lastErrorAt?: string
+    consecutiveFailures: number
+    isDegraded: boolean
+  }
+  skills: Array<{ name: string; slug: string; category: string; purpose: string; status: string; riskLevel: string }>
+  recentRuns: Array<{
+    id: string
+    model: string | null
+    tokensUsed: number
+    latencyMs: number | null
+    confidence: number | null
+    status: string
+    createdAt: string
+  }>
+  memory: Array<{ id: string; category: string; content: string; temperature: string; createdAt: string }>
+}
+
 interface ChatMessage {
   role: 'user' | 'agent'
   content: string
@@ -54,7 +100,7 @@ interface ChatMessage {
     latencyMs: number
     contextTokens: number
     contextSources: string
-    pipeline?: Record<string, unknown>
+    pipeline?: PipelineMetadata
   }
 }
 
@@ -68,7 +114,7 @@ interface RunResult {
   taskClassification?: string
   validationScore?: number
   reasoningPath?: string
-  pipeline?: Record<string, unknown>
+  pipeline?: PipelineMetadata
 }
 
 const roles = ['All', 'Analyst', 'Manager', 'Developer', 'Coordinator', 'Specialist', 'Lead', 'Strategist', 'Architect', 'Engineer', 'Consultant']
@@ -119,7 +165,7 @@ export default function AIEmployees() {
   // Detail dialog state
   const [detailAgent, setDetailAgent] = useState<Agent | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
-  const [detailData, setDetailData] = useState<Record<string, unknown> | null>(null)
+  const [detailData, setDetailData] = useState<AgentDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
   // Load real departments for filter dropdown
@@ -165,8 +211,8 @@ export default function AIEmployees() {
     if (!detailOpen || !detailAgent?.agentId) return
     setDetailLoading(true)
     setDetailData(null)
-    fetchApi(`/api/enterprise/agents/${detailAgent.agentId}/detail`)
-      .then((data: any) => { setDetailData(data) })
+    fetchApi<AgentDetail>(`/api/enterprise/agents/${detailAgent.agentId}/detail`)
+      .then((data) => { setDetailData(data) })
       .catch(() => {})
       .finally(() => setDetailLoading(false))
   }, [detailOpen, detailAgent?.agentId])
@@ -538,11 +584,11 @@ export default function AIEmployees() {
                         {msg.meta.pipeline?.taskClassification && (
                           <span className="text-emerald-500">{String(msg.meta.pipeline.taskClassification)}</span>
                         )}
-                        {msg.meta.pipeline?.ragResults > 0 && (
-                          <span className="text-blue-500">RAG: {msg.meta.pipeline.ragResults} sources</span>
+                        {(msg.meta.pipeline?.ragResults ?? 0) > 0 && (
+                          <span className="text-blue-500">RAG: {msg.meta.pipeline?.ragResults ?? 0} sources</span>
                         )}
                         {msg.meta.pipeline?.validationPassed === false && (
-                          <span className="text-amber-500">Validation: {Math.round((msg.meta.pipeline.validationScore as number || 0) * 100)}%</span>
+                          <span className="text-amber-500">Validation: {Math.round((msg.meta.pipeline?.validationScore ?? 0) * 100)}%</span>
                         )}
                       </div>
                     )}
@@ -705,12 +751,12 @@ export default function AIEmployees() {
                   {/* Stats Grid */}
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                     {[
-                      { label: 'Total Runs', value: detailData.totalRuns ?? detailData.stats?.totalRuns ?? '-', icon: BarChart3, color: 'text-[#003ABC]' },
-                      { label: 'Success Rate', value: detailData.successRate != null ? `${Math.round((detailData.successRate as number) * 100)}%` : (detailData.stats?.successRate != null ? `${Math.round((detailData.stats.successRate as number) * 100)}%` : '-'), icon: Zap, color: 'text-emerald-600' },
-                      { label: 'Avg Latency', value: detailData.avgLatency != null ? `${Math.round(detailData.avgLatency as number)}ms` : (detailData.stats?.avgLatency != null ? `${Math.round(detailData.stats.avgLatency as number)}ms` : '-'), icon: Clock, color: 'text-amber-600' },
-                      { label: 'Avg Confidence', value: detailData.avgConfidence != null ? `${Math.round((detailData.avgConfidence as number) * 100)}%` : (detailData.stats?.avgConfidence != null ? `${Math.round((detailData.stats.avgConfidence as number) * 100)}%` : '-'), icon: Brain, color: 'text-purple-600' },
-                      { label: 'Total Tokens', value: detailData.totalTokens != null ? Number(detailData.totalTokens).toLocaleString() : (detailData.stats?.totalTokens != null ? Number(detailData.stats.totalTokens).toLocaleString() : '-'), icon: Database, color: 'text-cyan-600' },
-                      { label: 'RAG Usage', value: detailData.ragUsageRate != null ? `${Math.round((detailData.ragUsageRate as number) * 100)}%` : (detailData.stats?.ragUsageRate != null ? `${Math.round((detailData.stats.ragUsageRate as number) * 100)}%` : '-'), icon: Activity, color: 'text-orange-600' },
+                      { label: 'Total Runs', value: detailData.stats.totalRuns.toLocaleString(), icon: BarChart3, color: 'text-[#003ABC]' },
+                      { label: 'Success Rate', value: `${Math.round(detailData.stats.successRate * 100)}%`, icon: Zap, color: 'text-emerald-600' },
+                      { label: 'Avg Latency', value: `${Math.round(detailData.stats.avgLatency)}ms`, icon: Clock, color: 'text-amber-600' },
+                      { label: 'Avg Confidence', value: `${Math.round(detailData.stats.avgConfidence * 100)}%`, icon: Brain, color: 'text-purple-600' },
+                      { label: 'Total Tokens', value: detailData.stats.totalTokens.toLocaleString(), icon: Database, color: 'text-cyan-600' },
+                      { label: 'RAG Usage', value: `${Math.round(detailData.stats.ragUsageRate * 100)}%`, icon: Activity, color: 'text-orange-600' },
                     ].map(s => (
                       <Card key={s.label} className="border-0 bg-slate-50 dark:bg-slate-900">
                         <CardContent className="p-3">
@@ -733,17 +779,17 @@ export default function AIEmployees() {
                           <div className="flex items-center justify-between">
                             <span className="text-xs text-slate-500">Health Score</span>
                             <div className="flex items-center gap-2 flex-1 max-w-[180px] ml-4">
-                              <Progress value={(detailData.health as Record<string, unknown>)?.score as number ?? detailData.healthScore as number ?? 0} className="h-2" />
-                              <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 w-8 text-right">{Math.round(((detailData.health as Record<string, unknown>)?.score as number ?? detailData.healthScore as number ?? 0) * 100)}%</span>
+                              <Progress value={detailData.health.healthScore} className="h-2" />
+                              <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 w-8 text-right">{Math.round(detailData.health.healthScore)}%</span>
                             </div>
                           </div>
                           <div className="grid grid-cols-2 gap-2 text-[10px]">
                             <span className="text-slate-400">Consecutive Failures</span>
-                            <span className="text-right font-medium text-slate-700 dark:text-slate-300">{String((detailData.health as Record<string, unknown>)?.consecutiveFailures ?? detailData.consecutiveFailures ?? 0)}</span>
-                            <span className="text-slate-400">Last Success</span>
-                            <span className="text-right font-medium text-emerald-600">{String((detailData.health as Record<string, unknown>)?.lastSuccess ?? detailData.lastSuccess ?? '-')}</span>
-                            <span className="text-slate-400">Last Failure</span>
-                            <span className="text-right font-medium text-red-500">{String((detailData.health as Record<string, unknown>)?.lastFailure ?? detailData.lastFailure ?? '-')}</span>
+                            <span className="text-right font-medium text-slate-700 dark:text-slate-300">{detailData.health.consecutiveFailures}</span>
+                            <span className="text-slate-400">Last Execution</span>
+                            <span className="text-right font-medium text-emerald-600">{detailData.health.lastExecutionAt ? new Date(detailData.health.lastExecutionAt).toLocaleString() : '—'}</span>
+                            <span className="text-slate-400">Last Error</span>
+                            <span className="text-right font-medium text-red-500">{detailData.health.lastErrorAt ? new Date(detailData.health.lastErrorAt).toLocaleString() : '—'}</span>
                           </div>
                         </CardContent>
                       </Card>
@@ -755,10 +801,10 @@ export default function AIEmployees() {
                     <div>
                       <h3 className="text-xs font-semibold text-slate-700 dark:text-slate-300 mb-2">Skills</h3>
                       <div className="flex flex-wrap gap-1.5">
-                        {(detailData.skills as Array<{ name?: string; category?: string; skill?: string }>).map((s, i) => (
-                          <Badge key={i} variant="secondary" className="text-[10px]">
-                            {s.name || s.skill || String(s)}
-                            {s.category && <span className="ml-1 text-slate-400">· {s.category}</span>}
+                        {detailData.skills.map((skill) => (
+                          <Badge key={skill.slug} variant="secondary" className="text-[10px]">
+                            {skill.name}
+                            <span className="ml-1 text-slate-400">· {skill.category}</span>
                           </Badge>
                         ))}
                       </div>
@@ -780,13 +826,13 @@ export default function AIEmployees() {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {(detailData.recentRuns as Array<Record<string, unknown>>).slice(0, 5).map((r, i) => (
-                            <TableRow key={i}>
-                              <TableCell className="text-[10px] py-2 font-mono">{String(r.model ?? '-')}</TableCell>
-                              <TableCell className="text-[10px] py-2">{r.latencyMs != null ? `${Math.round(r.latencyMs as number)}ms` : '-'}</TableCell>
-                              <TableCell className="text-[10px] py-2">{r.confidence != null ? `${Math.round((r.confidence as number) * 100)}%` : '-'}</TableCell>
-                              <TableCell className="text-[10px] py-2">{r.tokens != null ? Number(r.tokens).toLocaleString() : '-'}</TableCell>
-                              <TableCell className="text-[10px] py-2 text-slate-400">{String(r.timestamp ?? r.createdAt ?? '-')}</TableCell>
+                          {detailData.recentRuns.slice(0, 5).map((run) => (
+                            <TableRow key={run.id}>
+                              <TableCell className="text-[10px] py-2 font-mono">{run.model ?? '—'}</TableCell>
+                              <TableCell className="text-[10px] py-2">{run.latencyMs == null ? '—' : `${Math.round(run.latencyMs)}ms`}</TableCell>
+                              <TableCell className="text-[10px] py-2">{run.confidence == null ? '—' : `${Math.round(run.confidence * 100)}%`}</TableCell>
+                              <TableCell className="text-[10px] py-2">{run.tokensUsed.toLocaleString()}</TableCell>
+                              <TableCell className="text-[10px] py-2 text-slate-400">{new Date(run.createdAt).toLocaleString()}</TableCell>
                             </TableRow>
                           ))}
                         </TableBody>
@@ -800,17 +846,15 @@ export default function AIEmployees() {
                 <TabsContent value="memory" className="mt-4">
                   {detailData.memory && Array.isArray(detailData.memory) && detailData.memory.length > 0 ? (
                     <div className="space-y-2">
-                      {(detailData.memory as Array<Record<string, unknown>>).slice(0, 5).map((m, i) => (
-                        <Card key={i} className="border-0 bg-slate-50 dark:bg-slate-900">
+                      {detailData.memory.slice(0, 5).map((entry) => (
+                        <Card key={entry.id} className="border-0 bg-slate-50 dark:bg-slate-900">
                           <CardContent className="p-3">
                             <div className="flex items-start justify-between gap-2">
                               <div className="min-w-0 flex-1">
-                                {m.category && <Badge variant="outline" className="text-[9px] mb-1">{String(m.category)}</Badge>}
-                                <p className="text-xs text-slate-700 dark:text-slate-300 line-clamp-2">{String(m.content ?? m.text ?? m.key ?? '-')}</p>
+                                <Badge variant="outline" className="text-[9px] mb-1">{entry.category}</Badge>
+                                <p className="text-xs text-slate-700 dark:text-slate-300 line-clamp-2">{entry.content}</p>
                               </div>
-                              {m.temperature != null && (
-                                <Badge variant="secondary" className="text-[9px] shrink-0">{String(m.temperature)}</Badge>
-                              )}
+                              <Badge variant="secondary" className="text-[9px] shrink-0">{entry.temperature}</Badge>
                             </div>
                           </CardContent>
                         </Card>

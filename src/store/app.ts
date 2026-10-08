@@ -61,6 +61,7 @@ export type ViewType =
   | 'brand-management'
   | 'integration-manager'
   | 'agent-training'
+  | 'agent-evolution'
   | 'agent-evaluation'
   | 'model-registry'
   | 'agent-usage'

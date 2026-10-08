@@ -9,9 +9,11 @@
 
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'node:url';
 
-const schemaPath = path.join(__dirname, '..', 'prisma', 'schema.prisma');
-const mysqlSchemaPath = path.join(__dirname, '..', 'prisma', 'schema.mysql.prisma');
+const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
+const schemaPath = path.join(scriptDirectory, '..', 'prisma', 'schema.prisma');
+const mysqlSchemaPath = path.join(scriptDirectory, '..', 'prisma', 'schema.mysql.prisma');
 
 const schema = fs.readFileSync(schemaPath, 'utf8');
 
@@ -23,7 +25,7 @@ let mysqlSchema = schema.replace(
 
 // Collect all indexed fields per model
 const modelIndices: Record<string, Set<string>> = {};
-const modelRegex = /model\s+(\w+)\s*\{([^}]+)\}/g;
+const modelRegex = /^model\s+(\w+)\s*\{([\s\S]*?)^\}/gm;
 let match: RegExpExecArray | null;
 
 while ((match = modelRegex.exec(schema)) !== null) {
@@ -52,7 +54,7 @@ const SHORT_EXACT_NAMES = new Set([
   'gender', 'currency', 'localCurrency', 'code', 'country', 'city', 'state',
   'phone', 'ip', 'ipAddress', 'sourceIp', 'userAgent', 'format', 'retention', 'runtime',
   'relationType', 'season', 'month', 'accessLevel', 'key', 'companyId',
-  'departmentId', 'departmentName', 'userId', 'agentId', 'skillId', 'workflowId',
+  'departmentId', 'departmentName', 'userId', 'requestedBy', 'agentId', 'skillId', 'workflowId',
   'taskId', 'commandId', 'managerId', 'fromNodeId', 'toNodeId', 'roleId',
   'permissionId', 'resourceId', 'correlationId', 'agentTypeId', 'subcategory',
   'title', 'host', 'port', 'database', 'user', 'stageId', 'pipelineId', 'contactId',
@@ -61,7 +63,9 @@ const SHORT_EXACT_NAMES = new Set([
   'address', 'domain', 'ipOrCidr', 'domainName', 'engineType', 'eventType',
   'mimeType', 'extension', 'bucketName', 'storageClass', 'etag', 'checksum',
   'otpSecret', 'passwordHash', 'token', 'refreshToken', 'accessToken',
-  'apiName', 'level', 'pricing', 'period', 'authorName',
+  'apiName', 'level', 'pricing', 'period', 'authorName', 'syncType',
+  'step', 'stepName', 'triggerType', 'safetyLevel', 'learningScope',
+  'alertType', 'checkType', 'metric', 'sourceSystem', 'targetSystem', 'entityType',
 ]);
 
 const lines = mysqlSchema.split('\n');

@@ -31,7 +31,7 @@ export async function GET() {
         category: 'Webhook',
         status: w.isActive ? 'active' : 'disabled',
         protocol: w.events ? 'REST + Events' : 'REST',
-        purpose: w.description || 'Webhook endpoint',
+        purpose: `Webhook endpoint subscribed to ${w.events || 'configured events'}`,
         dataFlow: 'inbound',
         securityLevel: 'tls',
         company: w.company?.name,
@@ -50,7 +50,7 @@ export async function GET() {
     ]
 
     // Also count real system connections from agent runs
-    const [agentRunModels] = await db.agentRun.groupBy({
+    const agentRunModels = await db.agentRun.groupBy({
       by: ['model'],
       _count: { id: true },
       where: { model: { not: null } },

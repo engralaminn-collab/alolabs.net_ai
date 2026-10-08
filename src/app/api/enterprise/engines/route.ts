@@ -62,8 +62,8 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const engineType = searchParams.get('engineType') || 'memory'
-    const statusFilter = searchParams.get('status')
-    const actionFilter = searchParams.get('action')
+    const statusFilter = searchParams.get('status') ?? undefined
+    const actionFilter = searchParams.get('action') ?? undefined
     const limit = Math.min(Number(searchParams.get('limit') || 50), 200)
 
     let records: EngineRecord[] = []

@@ -87,6 +87,21 @@ function safeParseJson<T>(raw: string, fallback: T): T {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function knowledgeBelongsToCompany(metadataJson: string, companyId: string): boolean {
+  try {
+    const metadata: unknown = JSON.parse(metadataJson)
+    if (!isRecord(metadata)) return false
+    const ownerCompanyId = metadata.companyId
+    return ownerCompanyId === undefined || ownerCompanyId === companyId
+  } catch {
+    return false
+  }
+}
+
 /** Rough token estimation: ~4 characters per token (GPT-style BPE average). */
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
@@ -115,12 +130,14 @@ function truncateListItems(
 
 export async function buildAgentContext(params: {
   agentId: string;
+  companyId: string;
   task: string;
   maxContextTokens?: number;
   language?: string;
 }): Promise<BuiltContext> {
   const {
     agentId,
+    companyId,
     task,
     maxContextTokens = 8000,
     language = 'english',
@@ -129,8 +146,8 @@ export async function buildAgentContext(params: {
   const maxChars = maxContextTokens * 4;
 
   // ── 1. Load Agent with Department ─────────────────────────────────
-  const agent = await db.agent.findUnique({
-    where: { agentId },
+  const agent = await db.agent.findFirst({
+    where: { agentId, agentCompanyAccess: { some: { companyId } } },
     include: { department: true },
   });
 
@@ -145,9 +162,9 @@ export async function buildAgentContext(params: {
   const rawConstitutionRules = await db.constitutionalRule.findMany({
     where: {
       isActive: true,
-      OR: [
-        { departmentId: null },
-        { departmentId: agent.departmentId },
+      AND: [
+        { OR: [{ departmentId: null }, { departmentId: agent.departmentId }] },
+        { OR: [{ companyId: null }, { companyId }] },
       ],
     },
     orderBy: { severity: 'asc' },
@@ -176,7 +193,10 @@ export async function buildAgentContext(params: {
     rawSkills = await db.skill.findMany({
       where: {
         slug: { in: skillSlugs },
-        status: { in: ['private', 'approved'] },
+        OR: [
+          { status: 'approved' },
+          { status: 'private', skillCompanyAccess: { some: { companyId } } },
+        ],
       },
       take: 15,
       select: {
@@ -201,6 +221,7 @@ export async function buildAgentContext(params: {
   const rawPrompts = await db.promptTemplate.findMany({
     where: {
       isActive: true,
+      isPublic: true,
       OR: [
         { departmentId: null },
         { departmentId: agent.departmentId },
@@ -245,10 +266,13 @@ export async function buildAgentContext(params: {
       ],
     },
     orderBy: { confidence: 'desc' },
-    take: 10,
+    take: 50,
   });
 
-  const relevantKnowledge = rawKnowledge.map((k) => ({
+  const relevantKnowledge = rawKnowledge
+    .filter((knowledge) => knowledgeBelongsToCompany(knowledge.metadata, companyId))
+    .slice(0, 10)
+    .map((k) => ({
     title: k.title,
     type: k.type,
     content: k.content,
@@ -256,17 +280,31 @@ export async function buildAgentContext(params: {
   }));
 
   // ── 7. Load Memory ───────────────────────────────────────────────
-  const rawMemory = await db.agentMemory.findMany({
-    where: { agentId },
-    orderBy: { createdAt: 'desc' },
-    take: 5,
-  });
+  const [rawMemory, rawCompanyMemory] = await Promise.all([
+    db.agentMemory.findMany({
+      where: { agentId: agent.id, companyId },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+    }),
+    db.companyMemory.findMany({
+      where: { companyId },
+      orderBy: { updatedAt: 'desc' },
+      take: 5,
+    }),
+  ])
 
-  const relevantMemory = rawMemory.map((m) => ({
-    type: m.category,
-    content: m.content,
-    createdAt: m.createdAt.toISOString(),
-  }));
+  const relevantMemory = [
+    ...rawMemory.map((memory) => ({
+      type: `agent:${memory.category}`,
+      content: memory.content,
+      createdAt: memory.createdAt.toISOString(),
+    })),
+    ...rawCompanyMemory.map((memory) => ({
+      type: `company:${memory.category}`,
+      content: memory.content,
+      createdAt: memory.updatedAt.toISOString(),
+    })),
+  ].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, 8)
 
   // ── Parse agent JSON fields ──────────────────────────────────────
   const allowedTools = safeParseJson<string[]>(agent.allowedTools, []);

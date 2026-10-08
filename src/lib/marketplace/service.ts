@@ -1,7 +1,7 @@
 import { db } from '@/lib/db'
 import type { Prisma } from '@prisma/client'
 
-export async function installTemplate(templateId: string, data: { companyId?: string; userId?: string; config?: Record<string, unknown> }) {
+export async function installTemplate(templateId: string, data: { companyId: string; userId?: string; config?: Record<string, unknown> }) {
   const template = await db.marketplaceTemplate.findUnique({ where: { id: templateId } })
   if (!template) throw new Error('Template not found')
 

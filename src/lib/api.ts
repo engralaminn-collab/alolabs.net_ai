@@ -34,6 +34,8 @@ export async function fetchApi<T = any>(
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
+  const selectedCompany = useAppStore.getState().selectedCompany
+  if (selectedCompany) headers['x-company-slug'] = selectedCompany
 
   const res = await fetch(path, { ...options, headers })
 
@@ -65,6 +67,8 @@ export async function fetchApiRaw(
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
+  const selectedCompany = useAppStore.getState().selectedCompany
+  if (selectedCompany) headers['x-company-slug'] = selectedCompany
   if (options.body && !headers['Content-Type'] && !(options.body instanceof FormData)) {
     headers['Content-Type'] = 'application/json'
   }

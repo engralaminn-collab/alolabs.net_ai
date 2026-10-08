@@ -62,7 +62,7 @@ export class EvolutionTracker {
     const newTotalCorrections = evolution.totalCorrections + (wasSuccess ? 0 : 1);
 
     // 2. Calculate average confidence from knowledge base
-    const knowledgeStats = await db.agentKnowledge.aggregate({
+    const knowledgeStats = await db.agentMemory.aggregate({
       where: { agentId },
       _avg: { confidence: true },
       _count: true,
@@ -96,7 +96,7 @@ export class EvolutionTracker {
     ));
 
     // 7. Determine domain coverage
-    const categories = await db.agentKnowledge.groupBy({
+    const categories = await db.agentMemory.groupBy({
       by: ['category'],
       where: { agentId },
       _count: true,
@@ -220,7 +220,7 @@ export class EvolutionTracker {
       _sum: { totalKnowledge: true, totalSessions: true, totalCorrections: true },
     });
 
-    const totalKnowledge = await db.agentKnowledge.count();
+    const totalKnowledge = await db.agentMemory.count();
     const recentSessions = await db.agentLearningSession.count({
       where: { createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) } },
     });

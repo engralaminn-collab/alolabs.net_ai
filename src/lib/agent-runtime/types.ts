@@ -33,6 +33,11 @@ export interface AgentTask {
   agentId: string;
   companyId: string;
   userId: string;
+  instanceId?: string;
+  approvalExecutionId?: string;
+  approvalId?: string;
+  riskScore?: number;
+  securityFlags?: string[];
   parentTaskId?: string;
   tier: AgentTier;
   priority: TaskPriority;
@@ -62,7 +67,8 @@ export interface ExecutionResult {
   content: string;
   toolCalls?: ToolCallResult[];
   delegations?: DelegationResult[];
-  confidence: number;
+  /** Provider confidence is optional; the runtime does not synthesize it. */
+  confidence?: number;
   metadata?: Record<string, unknown>;
 }
 
@@ -96,7 +102,8 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
-  costUsd: number;
+  /** Only populated when the provider reports a real charge. */
+  costUsd?: number;
 }
 
 // ─── Resource Limits ────────────────────────────────────────────────

@@ -1,14 +1,11 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/api-auth';
-import { getOrchestrator } from '@/lib/multi-agent-orchestrator';
+import { NextRequest, NextResponse } from 'next/server'
+import { requireCompanyAuth } from '@/lib/api-auth'
+import { getOrchestrator } from '@/lib/multi-agent-orchestrator'
 
 export async function GET(request: NextRequest) {
   try {
-    await requireAuth();
-
-    const { searchParams } = new URL(request.url);
-    const taskId = searchParams.get('taskId');
-
+    const user = await requireCompanyAuth()
+    const taskId = request.nextUrl.searchParams.get('taskId')
     if (!taskId) {
       return NextResponse.json({
         success: false,
@@ -16,20 +13,18 @@ export async function GET(request: NextRequest) {
           code: 'VALIDATION_ERROR',
           message: 'taskId query parameter is required',
         },
-      }, { status: 400 });
+      }, { status: 400 })
     }
 
-    const orchestrator = getOrchestrator();
-    const task = orchestrator.getTaskStatus(taskId);
-
+    const task = await getOrchestrator().getTaskStatus(taskId, user.companyId)
     if (!task) {
       return NextResponse.json({
         success: false,
         error: {
           code: 'NOT_FOUND',
-          message: `Orchestration task ${taskId} not found`,
+          message: 'Orchestration task not found for this company',
         },
-      }, { status: 404 });
+      }, { status: 404 })
     }
 
     return NextResponse.json({
@@ -41,14 +36,16 @@ export async function GET(request: NextRequest) {
         priority: task.priority,
         input: task.input,
         error: task.error,
-        steps: task.steps.map((s) => ({
-          id: s.id,
-          agentId: s.agentId,
-          status: s.status,
-          latencyMs: s.latencyMs,
-          error: s.error,
-          startedAt: s.startedAt?.toISOString() ?? null,
-          completedAt: s.completedAt?.toISOString() ?? null,
+        steps: task.steps.map((step) => ({
+          id: step.id,
+          agentId: step.agentId,
+          status: step.status,
+          latencyMs: step.latencyMs,
+          error: step.error,
+          executionId: step.executionId,
+          approvalId: step.approvalId,
+          startedAt: step.startedAt?.toISOString() ?? null,
+          completedAt: step.completedAt?.toISOString() ?? null,
         })),
         result: task.result
           ? {
@@ -63,27 +60,16 @@ export async function GET(request: NextRequest) {
         createdAt: task.createdAt.toISOString(),
         updatedAt: task.updatedAt.toISOString(),
       },
-    });
-  } catch (error) {
-    if (error instanceof Error && error.message === 'Unauthorized') {
-      return NextResponse.json({
-        success: false,
-        error: { code: 'UNAUTHORIZED', message: 'Unauthorized' },
-      }, { status: 401 });
-    }
-    if (error instanceof Error && error.message === 'Forbidden') {
-      return NextResponse.json({
-        success: false,
-        error: { code: 'FORBIDDEN', message: 'Forbidden' },
-      }, { status: 403 });
-    }
-    console.error('[/api/enterprise/orchestrator/status]', error);
+    })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Internal server error'
+    const status = message === 'Unauthorized' ? 401 : message === 'Forbidden' ? 403 : 500
     return NextResponse.json({
       success: false,
       error: {
-        code: 'INTERNAL_ERROR',
-        message: error instanceof Error ? error.message : 'Internal server error',
+        code: status === 401 ? 'UNAUTHORIZED' : status === 403 ? 'FORBIDDEN' : 'INTERNAL_ERROR',
+        message,
       },
-    }, { status: 500 });
+    }, { status })
   }
 }

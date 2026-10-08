@@ -18,6 +18,7 @@ import {
   MigrationError,
 } from './types';
 
+import { createRequire } from 'node:module';
 import { join } from 'path';
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -72,7 +73,7 @@ export class SQLiteAdapter implements BaseDatabaseAdapter {
     const dbPath = getDbPath(this.config);
 
     try {
-      const req = typeof __non_webpack_require__ !== 'undefined' ? __non_webpack_require__ : eval('require');
+      const req = createRequire(join(process.cwd(), 'package.json'));
       const Database = req('better-sqlite3');
 
       this._db = new Database(dbPath);

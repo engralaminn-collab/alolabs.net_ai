@@ -19,7 +19,7 @@ import {
   validateExecution, storeExecutionMemory, buildRAGContextSection,
 } from './pipeline';
 import { getEventBus } from '@/lib/event-bus';
-import { getApprovalEngine } from '@/lib/approval-engine';
+import { validateInput, validateOutput } from '@/lib/ai-security/validator';
 
 // ─── Model Fallback Constants ────────────────────────────────────────
 
@@ -116,7 +116,37 @@ export class AgentExecutionEngine {
     mode?: 'sync' | 'async';
     parentTaskId?: string;
     delegationDepth?: number;
+    instanceId?: string;
+    approvalExecutionId?: string;
+    approvalId?: string;
+    approvedBy?: string;
   }): Promise<AgentTask> {
+    const agent = await db.agent.findFirst({
+      where: {
+        agentId: params.agentId,
+        status: 'active',
+        agentCompanyAccess: { some: { companyId: params.companyId } },
+      },
+      select: { id: true },
+    })
+    if (!agent) throw new Error('Agent is not active or available to this company')
+
+    if (params.userId && params.userId !== 'anonymous') {
+      const membership = await db.companyUser.findUnique({
+        where: { companyId_userId: { companyId: params.companyId, userId: params.userId } },
+        select: { id: true },
+      })
+      if (!membership) throw new Error('Forbidden')
+    }
+
+    if (params.instanceId) {
+      const instance = await db.agentInstance.findFirst({
+        where: { id: params.instanceId, agentId: agent.id, companyId: params.companyId, status: 'active' },
+        select: { id: true },
+      })
+      if (!instance) throw new Error('Active agent instance not found for this company')
+    }
+
     const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const mode = params.mode ?? 'async';
 
@@ -125,6 +155,10 @@ export class AgentExecutionEngine {
       agentId: params.agentId,
       companyId: params.companyId,
       userId: params.userId,
+      instanceId: params.instanceId,
+      approvalExecutionId: params.approvalExecutionId,
+      approvalId: params.approvalId,
+      approvedBy: params.approvedBy,
       parentTaskId: params.parentTaskId,
       tier: 'worker',
       priority: params.priority ?? 'normal',
@@ -235,34 +269,173 @@ export class AgentExecutionEngine {
     if (!task) throw new Error(`Task ${taskId} not found`);
 
     const startTime = Date.now();
+    let slotAcquired = false;
+    let agentDbId: string | undefined;
     const abortController = new AbortController();
     this.abortControllers.set(taskId, abortController);
 
     try {
-      // 1. Transition to running
-      if (!this.stateManager.canExecute(task.agentId, task.companyId)) {
-        // Queue if at capacity
+      if (!this.stateManager.canExecute(task.agentId, task.companyId) ||
+          !this.stateManager.acquireSlot(task.agentId, task.companyId)) {
         if (task.status === 'created') {
-          this.stateManager.transition(taskId, 'ready', 'At capacity, requeued');
+          this.stateManager.transition(taskId, 'ready', 'At capacity; requeued');
           this.queue.enqueue(this.stateManager.getTask(taskId)!);
           return this.stateManager.getTask(taskId)!;
         }
+        throw new Error('Execution capacity is unavailable');
       }
-
-      this.stateManager.acquireSlot(task.agentId, task.companyId);
+      slotAcquired = true;
       this.stateManager.transition(taskId, 'running', 'Execution started');
 
-      // 2. Load agent config from DB
       const agent = await db.agent.findUnique({ where: { agentId: task.agentId } });
-      if (!agent) {
-        throw new Error(`Agent ${task.agentId} not found in database`);
+      if (!agent || agent.status !== 'active') {
+        throw new Error(`Active agent ${task.agentId} was not found`);
+      }
+      agentDbId = agent.id;
+
+      const inputValidation = await validateInput(
+        { task: task.input, context: task.context ?? {} },
+        { companyId: task.companyId, agentId: agent.id },
+      );
+      task.riskScore = inputValidation.riskScore;
+      task.securityFlags = inputValidation.flags;
+      task.riskLevel = inputValidation.riskScore >= 0.8
+        ? 'critical'
+        : inputValidation.riskScore >= 0.5
+          ? 'high'
+          : inputValidation.riskScore >= 0.2
+            ? 'medium'
+            : 'low';
+
+      if (!inputValidation.valid) {
+        const message = `Input blocked by security validation: ${inputValidation.flags.join(', ')}`;
+        task.error = {
+          code: 'INPUT_VALIDATION_FAILED',
+          message,
+          retryable: false,
+          attempts: 1,
+          maxRetries: 0,
+          lastAttemptAt: new Date(),
+        };
+        this.stateManager.transition(taskId, 'failed', message);
+        this.healthMonitor.recordFailure(task.agentId, Date.now() - startTime, message);
+        return this.stateManager.getTask(taskId)!;
       }
 
-      // 3. Classify task for intelligent model routing
+      const needsApproval =
+        task.priority === 'critical' ||
+        task.priority === 'high' ||
+        task.riskScore >= 0.5;
+
+      if (needsApproval) {
+        const approvalExecutionId = task.approvalExecutionId;
+        if (!approvalExecutionId) {
+          throw new Error('A persisted AgentExecution is required before requesting approval');
+        }
+
+        const persistedExecution = await db.agentExecution.findFirst({
+          where: {
+            id: approvalExecutionId,
+            companyId: task.companyId,
+            userId: task.userId,
+            status: { in: ['running', 'approval_required'] },
+          },
+          select: { id: true },
+        });
+        if (!persistedExecution) {
+          throw new Error('Approval is not bound to an active company-scoped AgentOS execution');
+        }
+
+        if (!task.approvalId) {
+          const approval = await db.$transaction(async (transaction) => {
+            const currentExecution = await transaction.agentExecution.findFirst({
+              where: {
+                id: approvalExecutionId,
+                companyId: task.companyId,
+                userId: task.userId,
+                status: 'running',
+                approvalId: null,
+              },
+              select: { id: true },
+            });
+            if (!currentExecution) {
+              throw new Error('Execution is no longer eligible for a new approval');
+            }
+
+            const createdApproval = await transaction.approval.create({
+              data: {
+                type: 'agent_action',
+                title: `Agent execution approval: ${agent.name}`,
+                description: `Risk score ${task.riskScore?.toFixed(2)}; flags: ${task.securityFlags?.join(', ') || 'priority policy'}`,
+                requestJson: JSON.stringify({
+                  agentId: task.agentId,
+                  taskId,
+                  inputLength: task.input.length,
+                  riskScore: task.riskScore,
+                  flags: task.securityFlags,
+                }),
+                requestedBy: task.userId,
+                companyId: task.companyId,
+                riskLevel: task.riskLevel === 'low' ? 'high' : task.riskLevel,
+                executionId: currentExecution.id,
+              },
+            });
+
+            const linked = await transaction.agentExecution.updateMany({
+              where: {
+                id: currentExecution.id,
+                companyId: task.companyId,
+                userId: task.userId,
+                status: 'running',
+                approvalId: null,
+              },
+              data: {
+                approvalId: createdApproval.id,
+                status: 'approval_required',
+                step: 'approval',
+                stepNumber: 4,
+                riskScore: task.riskScore,
+                securityFlags: JSON.stringify(task.securityFlags ?? []),
+                validatedInput: task.input,
+              },
+            });
+            if (linked.count !== 1) {
+              throw new Error('Execution changed before the approval could be linked');
+            }
+            return createdApproval;
+          });
+
+          task.approvalId = approval.id;
+          const message = 'Human approval is required before this execution can continue';
+          task.error = {
+            code: 'APPROVAL_REQUIRED',
+            message,
+            retryable: false,
+            attempts: 1,
+            maxRetries: 0,
+            lastAttemptAt: new Date(),
+          };
+          this.stateManager.transition(taskId, 'waiting_approval', message);
+          return this.stateManager.getTask(taskId)!;
+        }
+
+        const approvedRecord = await db.approval.findFirst({
+          where: {
+            id: task.approvalId,
+            companyId: task.companyId,
+            executionId: approvalExecutionId,
+            status: 'approved',
+          },
+          select: { id: true },
+        });
+        if (!approvedRecord) {
+          throw new Error('A current, company-scoped approval is required');
+        }
+      }
+
       const taskClassification = classifyTask(task.input, agent.role, agent.type);
       const selectedModel = selectModelForTask(taskClassification);
 
-      // ── Event: agent.task.started ─────────────────────────────
       try {
         getEventBus().publish({
           id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -274,8 +447,6 @@ export class AgentExecutionEngine {
             taskId,
             agentId: task.agentId,
             companyId: task.companyId,
-            userId: task.userId,
-            input: task.input,
             priority: task.priority,
             modelTier: taskClassification.suggestedModelTier,
           },
@@ -283,87 +454,45 @@ export class AgentExecutionEngine {
           timestamp: new Date(),
           correlationId: taskId,
         }).catch(() => {});
-      } catch { /* event bus failure must not break execution */ }
+      } catch { /* Event delivery must not block an execution. */ }
 
-      // ── Approval Check for High-Risk Tasks ─────────────────────
-      try {
-        const needsApproval =
-          task.priority === 'critical' || task.priority === 'high' ||
-          task.riskLevel === 'high' || task.riskLevel === 'critical';
-
-        if (needsApproval) {
-          const approvalEngine = getApprovalEngine();
-          const decision = await approvalEngine.submit({
-            agentId: task.agentId,
-            companyId: task.companyId,
-            userId: task.userId,
-            taskId,
-            action: 'agent_execution',
-            riskLevel: task.riskLevel,
-            description: task.input.slice(0, 200),
-          });
-
-          if (!decision.approved) {
-            const blockMessage = `Task blocked: Approval required for ${task.riskLevel}-risk action`;
-            try {
-              this.stateManager.transition(taskId, 'waiting_approval', blockMessage);
-            } catch { /* transition may fail */ }
-
-            task.error = {
-              code: 'APPROVAL_REQUIRED',
-              message: blockMessage,
-              retryable: false,
-              attempts: 1,
-              maxRetries: 0,
-              lastAttemptAt: new Date(),
-            };
-
-            return this.stateManager.getTask(taskId)!;
-          }
-        }
-      } catch { /* approval engine failure must not break normal execution */ }
-
-      // 4. Retrieve task-relevant knowledge via RAG
       let ragContext;
       let ragSection = '';
       try {
-        ragContext = await retrieveRelevantKnowledge(task.input, agent.departmentId, 3);
-        if (ragContext.results.length > 0) {
-          ragSection = buildRAGContextSection(ragContext);
-        }
+        ragContext = await retrieveRelevantKnowledge(task.input, agent.departmentId, 3, task.companyId);
+        if (ragContext.results.length > 0) ragSection = buildRAGContextSection(ragContext);
       } catch (ragError) {
-        console.warn(`[AgentRuntime] RAG retrieval failed for ${task.agentId}:`, ragError);
+        console.warn(`[AgentRuntime] Company-scoped RAG retrieval failed for ${task.agentId}:`, ragError);
       }
 
-      // 5. Build system prompt via Context Engine (agent-specific identity, rules, skills, SOPs, knowledge, memory)
       let systemPrompt: string;
-      let contextTokens = 0;
+      let estimatedContextTokens: number | undefined;
+      const contextSourceNames = new Set<string>();
       try {
-        const builtContext = await buildAgentContext({
-          agentId: task.agentId,
-          task: task.input,
-        });
+        const builtContext = await buildAgentContext({ agentId: task.agentId, companyId: task.companyId, task: task.input });
         systemPrompt = builtContext.systemPrompt;
-        // Inject RAG results if available
-        if (ragSection) {
-          systemPrompt = systemPrompt + '\n\n' + ragSection;
+        estimatedContextTokens = builtContext.contextTokens;
+        for (const [source, count] of Object.entries(builtContext.sources)) {
+          if (count > 0) contextSourceNames.add(source);
         }
-        contextTokens = builtContext.contextTokens + (ragContext ? Math.ceil(ragSection.length / 4) : 0);
-      } catch (ctxError) {
-        console.warn(`[AgentRuntime] Context engine failed for ${task.agentId}, using fallback:`, ctxError);
-        const agentName = agent.name || task.agentId;
-        const deptName = agent.departmentName || 'Unknown';
-        systemPrompt = `You are ${agentName}, a ${agent.role || 'specialist'} AI employee in the ${deptName} department at ALO Labs. You have access to your department's knowledge, skills, and standard operating procedures. Respond accurately and professionally.`;
-        if (ragSection) systemPrompt += '\n\n' + ragSection;
+        if (ragSection) {
+          systemPrompt += `\n\n${ragSection}`;
+          contextSourceNames.add('rag');
+        }
+      } catch (contextError) {
+        console.warn(`[AgentRuntime] Context engine failed for ${task.agentId}:`, contextError);
+        systemPrompt = `You are ${agent.name}, a ${agent.role} AI employee in the ${agent.departmentName} department at ALO Labs. Respond accurately and professionally. Do not claim to have used tools or data that were not provided.`;
+        if (ragSection) {
+          systemPrompt += `\n\n${ragSection}`;
+          contextSourceNames.add('rag');
+        }
       }
+      const contextSources = [...contextSourceNames].sort().join(',');
 
-      // 6. Build messages
       const messages = [
         { role: 'system' as const, content: systemPrompt },
         { role: 'user' as const, content: task.input },
       ];
-
-      // 5. Add context as additional user message if provided
       if (task.context && Object.keys(task.context).length > 0) {
         messages.splice(1, 0, {
           role: 'user' as const,
@@ -371,7 +500,6 @@ export class AgentExecutionEngine {
         });
       }
 
-      // 8. Call AI Router with intelligent model routing + self-healing fallback
       const router = getRouter();
       const originalModel = selectedModel;
       const routerRequest = {
@@ -384,40 +512,27 @@ export class AgentExecutionEngine {
       let aiResponse;
       let modelFallback = false;
       let fallbackTriggerError: string | undefined;
-
       try {
-        aiResponse = await router.chat(
-          routerRequest,
-          task.companyId,
-          task.agentId,
-        );
+        aiResponse = await router.chat(routerRequest, task.companyId, task.agentId);
       } catch (routerError) {
         const routerErrorCode = this.classifyError(routerError);
+        if (!FALLBACK_RETRYABLE_ERRORS.has(routerErrorCode)) throw routerError;
 
-        if (FALLBACK_RETRYABLE_ERRORS.has(routerErrorCode)) {
-          const fallbackModel = MODEL_FALLBACK_CHAIN[originalModel];
-          if (fallbackModel) {
-            try {
-              aiResponse = await router.chat(
-                { ...routerRequest, model: fallbackModel },
-                task.companyId,
-                task.agentId,
-              );
-              modelFallback = true;
-              fallbackTriggerError = routerErrorCode;
-            } catch {
-              // Fallback also failed — re-throw original error
-              throw routerError;
-            }
-          } else {
-            throw routerError;
-          }
-        } else {
+        const fallbackModel = MODEL_FALLBACK_CHAIN[originalModel];
+        if (!fallbackModel) throw routerError;
+        try {
+          aiResponse = await router.chat(
+            { ...routerRequest, model: fallbackModel },
+            task.companyId,
+            task.agentId,
+          );
+          modelFallback = true;
+          fallbackTriggerError = routerErrorCode;
+        } catch {
           throw routerError;
         }
       }
 
-      // ── Event: agent.task.self_healed (on successful fallback) ─
       if (modelFallback) {
         try {
           getEventBus().publish({
@@ -438,46 +553,88 @@ export class AgentExecutionEngine {
             timestamp: new Date(),
             correlationId: taskId,
           }).catch(() => {});
-        } catch { /* event bus failure must not break execution */ }
+        } catch { /* Event delivery must not block an execution. */ }
       }
 
-      // 7. Record token usage
-      this.stateManager.recordTokens(task.companyId, aiResponse.usage.totalTokens);
+      const outputValidation = await validateOutput(aiResponse.content, {
+        companyId: task.companyId,
+        agentId: agent.id,
+      });
+      if (!outputValidation.valid) {
+        throw new Error(`Output blocked by security validation: ${outputValidation.flags.join(', ')}`);
+      }
 
+      this.stateManager.recordTokens(task.companyId, aiResponse.usage.totalTokens);
       const tokenUsage: TokenUsage = {
         promptTokens: aiResponse.usage.promptTokens,
         completionTokens: aiResponse.usage.completionTokens,
         totalTokens: aiResponse.usage.totalTokens,
-        costUsd: this.estimateCost(aiResponse.usage.totalTokens, aiResponse.model),
       };
-
-      // 9. Validate execution result
       const validation = validateExecution(aiResponse.content, task.input, agent.role);
-
-      // 10. Build result
       const result: ExecutionResult = {
         content: aiResponse.content,
-        confidence: this.estimateConfidence(aiResponse) * validation.score,
         metadata: {
           model: aiResponse.model,
           finishReason: aiResponse.finishReason,
           latencyMs: aiResponse.latencyMs,
-          contextTokens,
-          contextSources: ragContext?.results.length ? 'constitution,skills,prompts,sops,knowledge,memory,rag' : 'constitution,skills,prompts,sops,knowledge,memory',
+          contextSources,
+          ...(typeof estimatedContextTokens === 'number' ? { estimatedContextTokens } : {}),
           taskClassification: taskClassification.suggestedModelTier,
-          validationScore: validation.score,
-          validationPassed: validation.passed,
-          ragResults: ragContext?.results.length || 0,
+          heuristicValidationScore: validation.score,
+          heuristicValidationPassed: validation.passed,
+          securityValidationPassed: outputValidation.valid,
+          ragResults: ragContext?.results.length ?? 0,
+          promptTokens: aiResponse.usage.promptTokens,
+          completionTokens: aiResponse.usage.completionTokens,
+          totalTokens: aiResponse.usage.totalTokens,
           ...(modelFallback ? { modelFallback: true, originalModel } : {}),
         },
       };
 
-      // 11. Update task
+      const durationMs = Date.now() - startTime;
+      const agentRun = await db.agentRun.create({
+        data: {
+          id: task.id,
+          agentId: agent.id,
+          agentName: agent.name,
+          input: task.input,
+          output: aiResponse.content,
+          durationMs,
+          model: aiResponse.model,
+          tokensUsed: aiResponse.usage.totalTokens,
+          companyId: task.companyId,
+          latencyMs: aiResponse.latencyMs,
+          contextSources,
+          status: 'running',
+          instanceId: task.instanceId,
+          requestId: task.id,
+          userId: task.userId,
+          priority: task.priority,
+          riskScore: task.riskScore,
+          securityFlags: JSON.stringify(task.securityFlags ?? []),
+          validatedInput: task.input,
+          approvalId: task.approvalId,
+          step: 'execution',
+          stepNumber: 5,
+          reviewResult: JSON.stringify({
+            heuristicValidation: validation,
+            securityValidation: outputValidation,
+            heuristicValidationScore: validation.score,
+            heuristicValidationPassed: validation.passed,
+            securityValidationPassed: outputValidation.valid,
+            taskClassification: taskClassification.suggestedModelTier,
+            ragResults: ragContext?.results.length ?? 0,
+            promptTokens: aiResponse.usage.promptTokens,
+            completionTokens: aiResponse.usage.completionTokens,
+          }),
+        },
+      });
+
+      result.metadata = { ...result.metadata, agentRunId: agentRun.id };
       task.result = result;
       task.tokenUsage = tokenUsage;
       this.stateManager.transition(taskId, 'completed', 'Execution succeeded');
 
-      // ── Event: agent.task.completed ────────────────────────────
       try {
         getEventBus().publish({
           id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -490,75 +647,45 @@ export class AgentExecutionEngine {
             agentId: task.agentId,
             model: aiResponse.model,
             latencyMs: Date.now() - startTime,
-            confidence: result.confidence,
-            contextTokens,
-            contextSources: result.metadata?.contextSources,
-            validationScore: validation.score,
+            promptTokens: aiResponse.usage.promptTokens,
+            completionTokens: aiResponse.usage.completionTokens,
+            contextSources,
+            heuristicValidationScore: validation.score,
           },
           priority: task.priority,
           timestamp: new Date(),
           correlationId: taskId,
         }).catch(() => {});
-      } catch { /* event bus failure must not break execution */ }
+      } catch { /* Event delivery must not block an execution. */ }
 
-      // 12. Store execution in AgentRun (with full pipeline metadata)
-      try {
-        await db.agentRun.create({
-          data: {
-            agentId: agent.id,
-            agentName: agent.name,
-            input: task.input,
-            output: aiResponse.content,
-            durationMs: Date.now() - startTime,
-            model: aiResponse.model,
-            tokensUsed: aiResponse.usage.totalTokens,
-            companyId: task.companyId,
-            latencyMs: aiResponse.latencyMs,
-            confidence: result.confidence,
-            contextSources: result.metadata?.contextSources as string || '',
-            status: 'completed',
-          },
-        });
-      } catch { /* AgentRun write may fail — continue */ }
-
-      // 13. Memory write-back and learning
-      storeExecutionMemory({
+      await storeExecutionMemory({
         agentDbId: agent.id,
-        agentId: task.agentId,
+        companyId: task.companyId,
+        taskId,
         task: task.input,
         result: aiResponse.content,
         model: aiResponse.model,
         latencyMs: Date.now() - startTime,
-        confidence: result.confidence,
         validation,
-        contextSources: result.metadata?.contextSources as string || '',
-      }).catch(() => { /* best-effort learning */ });
+        contextSources,
+      });
 
-      // 14. Record health
       this.healthMonitor.recordSuccess(task.agentId, Date.now() - startTime);
-
-      // 15. Audit log
-      await this.createAuditLog(task, 'success', aiResponse.latencyMs);
-
-      // 16. Store in DB if AuditLog model exists (userId FK validated first)
-      try {
-        // Only set userId if it references a valid User record
-        const auditData: Record<string, unknown> = {
+      await db.auditLog.create({
+        data: {
           action: 'agent_execution',
           resource: task.agentId,
           details: JSON.stringify({
-            taskId, agentId: task.agentId, companyId: task.companyId,
+            taskId,
+            agentId: task.agentId,
+            companyId: task.companyId,
+            status: 'completed',
             tokens: tokenUsage.totalTokens,
             latencyMs: Date.now() - startTime,
           }),
-        };
-        // Validate userId FK exists before writing
-        if (task.userId && task.userId !== 'anonymous') {
-          const userExists = await db.user.findUnique({ where: { id: task.userId }, select: { id: true } });
-          if (userExists) auditData.userId = task.userId;
-        }
-        await db.auditLog.create({ data: auditData as never });
-      } catch { /* audit log write failed — non-critical */ }
+          ...(task.userId && task.userId !== 'anonymous' ? { userId: task.userId } : {}),
+        },
+      }).catch(() => { /* Audit persistence is best-effort; task output is already stored. */ });
 
       return this.stateManager.getTask(taskId)!;
     } catch (error) {
@@ -567,7 +694,6 @@ export class AgentExecutionEngine {
       const retryable = this.isRetryable(error);
       const errorCode = this.classifyError(error);
 
-      // ── Event: agent.task.failed ──────────────────────────────
       try {
         getEventBus().publish({
           id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -575,18 +701,12 @@ export class AgentExecutionEngine {
           source: task.agentId,
           companyId: task.companyId,
           userId: task.userId,
-          data: {
-            taskId,
-            agentId: task.agentId,
-            errorCode,
-            errorMessage,
-            latencyMs: latency,
-          },
+          data: { taskId, agentId: task.agentId, errorCode, errorMessage, latencyMs: latency },
           priority: task.priority,
           timestamp: new Date(),
           correlationId: taskId,
         }).catch(() => {});
-      } catch { /* event bus failure must not break execution */ }
+      } catch { /* Event delivery must not block failure handling. */ }
 
       task.error = {
         code: errorCode,
@@ -596,19 +716,53 @@ export class AgentExecutionEngine {
         maxRetries: 3,
         lastAttemptAt: new Date(),
       };
-
-      try {
-        this.stateManager.transition(taskId, 'failed', `Execution failed: ${errorMessage}`);
-      } catch { /* already in terminal state */ }
-
+      if (task.status === 'running' || task.status === 'ready' || task.status === 'created') {
+        try {
+          this.stateManager.transition(taskId, 'failed', `Execution failed: ${errorMessage}`);
+        } catch { /* Preserve the recorded failure if the transition has already occurred. */ }
+      }
       this.healthMonitor.recordFailure(task.agentId, latency, errorMessage);
 
-      await this.createAuditLog(task, 'failure', latency).catch(() => {});
+      if (agentDbId) {
+        await db.agentRun.create({
+          data: {
+            id: task.id,
+            agentId: agentDbId,
+            companyId: task.companyId,
+            input: task.input,
+            status: 'failed',
+            instanceId: task.instanceId,
+            requestId: task.id,
+            userId: task.userId,
+            priority: task.priority,
+            riskScore: task.riskScore,
+            securityFlags: JSON.stringify(task.securityFlags ?? []),
+            approvalId: task.approvalId,
+            error: errorCode,
+            errorMessage,
+            durationMs: latency,
+            completedAt: new Date(),
+          },
+        }).catch(() => { /* Failure record persistence is best-effort. */ });
+      }
+
+      await db.auditLog.create({
+        data: {
+          action: 'agent_execution_failed',
+          resource: task.agentId,
+          details: JSON.stringify({ taskId, companyId: task.companyId, errorCode, latencyMs: latency }),
+          ...(task.userId && task.userId !== 'anonymous' ? { userId: task.userId } : {}),
+        },
+      }).catch(() => {});
 
       return this.stateManager.getTask(taskId)!;
     } finally {
       this.abortControllers.delete(taskId);
-      this.stateManager.releaseSlot(task.companyId);
+      const currentTask = this.stateManager.getTask(taskId);
+      if (slotAcquired && currentTask &&
+          !['completed', 'failed', 'timed_out'].includes(currentTask.status)) {
+        this.stateManager.releaseSlot(task.companyId);
+      }
     }
   }
 
@@ -638,22 +792,6 @@ export class AgentExecutionEngine {
   }
 
   // ─── Internal: Helpers ─────────────────────────────────────────
-
-  private estimateConfidence(aiResponse: { finishReason: string; model: string }): number {
-    if (aiResponse.finishReason === 'stop') return 0.9
-    if (aiResponse.finishReason === 'length') return 0.5
-    return 0.7
-  }
-
-  private estimateCost(totalTokens: number, model: string): number {
-    // Rough cost estimation (per 1M tokens)
- const costPerMillion: Record<string, number> = {
-      'claude-3.5-sonnet': 3, 'gpt-4o': 2.5, 'gpt-4o-mini': 0.15,
-      'llama3': 0, 'mistral': 0.4, 'deepseek': 0.14,
-    };
-    const rate = Object.entries(costPerMillion).find(([k]) => model.includes(k))?.[1] ?? 2;
-    return (totalTokens / 1_000_000) * rate;
-  }
 
   private isRetryable(error: unknown): boolean {
     if (error instanceof Error) {

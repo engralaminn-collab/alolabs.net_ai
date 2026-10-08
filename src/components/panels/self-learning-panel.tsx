@@ -373,7 +373,7 @@ export default function SelfLearningPanel() {
 }
 
 // ── Helper Components ──────────────────────────────────────────
-function StatCard({ icon, label, value, sub, color }: { icon: React.ReactNode; label: string; value: string; sub: string; color: string }) {
+function StatCard({ icon, label, value, sub, color }: { icon: React.ReactNode; label: string; value: string | number; sub: string; color: string }) {
   return (
     <Card>
       <CardContent className="pt-4">
