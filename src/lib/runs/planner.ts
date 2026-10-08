@@ -202,7 +202,7 @@ export function heuristicPlan(objective: string): PlanResult {
 export async function planObjective(
   objective: string,
   companyId: string,
-  options?: { preferredModel?: string },
+  options?: { preferredModel?: string; runId?: string },
 ): Promise<PlanResult> {
   try {
     const router = getRouter();
@@ -215,7 +215,10 @@ export async function planObjective(
       maxTokens: 2048,
       temperature: 0.2,
     };
-    const response = await router.chat(request, companyId, 'master-orchestrator');
+    const response = await router.chat(request, companyId, 'master-orchestrator', {
+      runId: options?.runId,
+      taskType: 'run.plan',
+    });
     const parsed = extractJsonObject(response.content);
     if (parsed) {
       const plan = normalizeLlmPlan(parsed);

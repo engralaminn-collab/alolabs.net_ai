@@ -166,13 +166,47 @@ describe('auth utilities — expanded v2', () => {
       expect(result).toBeNull();
     });
 
-    it('should return userId when session exists', async () => {
+    it('should return userId when a non-expired session exists', async () => {
+      const now = Date.now();
+      mockSettingsFindUnique.mockResolvedValue({
+        key: 'session:sometoken',
+        value: JSON.stringify({
+          userId: 'user-123',
+          createdAt: new Date(now - 60_000).toISOString(),
+          expiresAt: new Date(now + 60 * 60_000).toISOString(),
+          lastUsedAt: new Date(now - 1_000).toISOString(),
+        }),
+      });
+      const result = await verifySessionToken('sometoken');
+      expect(result).toMatchObject({ userId: 'user-123' });
+      expect(result?.session.expiresAt).toBeDefined();
+    });
+
+    it('should reject (and delete) legacy sessions that carry no expiry', async () => {
+      // Sessions created before expiry enforcement cannot be trusted
+      // indefinitely: the user signs in once more and gets a bounded session.
+      mockSettingsDelete.mockClear();
       mockSettingsFindUnique.mockResolvedValue({
         key: 'session:sometoken',
         value: JSON.stringify({ userId: 'user-123' }),
       });
       const result = await verifySessionToken('sometoken');
-      expect(result).toEqual({ userId: 'user-123' });
+      expect(result).toBeNull();
+      expect(mockSettingsDelete).toHaveBeenCalled();
+    });
+
+    it('should reject an expired session', async () => {
+      const now = Date.now();
+      mockSettingsFindUnique.mockResolvedValue({
+        key: 'session:sometoken',
+        value: JSON.stringify({
+          userId: 'user-123',
+          createdAt: new Date(now - 48 * 3600_000).toISOString(),
+          expiresAt: new Date(now - 1_000).toISOString(),
+          lastUsedAt: new Date(now - 1_000).toISOString(),
+        }),
+      });
+      expect(await verifySessionToken('sometoken')).toBeNull();
     });
 
     it('should return null when session value has no userId', async () => {

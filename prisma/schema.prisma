@@ -3360,7 +3360,7 @@ model OutputVersion {
 }
 
 /// Configured AI provider (platform-wide when companyId is null). The API key
-/// is stored AES-256-GCM encrypted under SECRETS_MASTER_KEY; only a fingerprint
+/// is stored AES-256-GCM encrypted under ENCRYPTION_KEY (src/lib/security/field-encryption.ts); only a fingerprint
 /// is ever returned to clients.
 model AIProviderConfig {
   id                  String    @id @default(cuid())

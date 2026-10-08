@@ -63,15 +63,22 @@ function startWorker(): void {
   // Lazy Node-only imports — this module is also bundled for the edge
   // runtime, where Prisma/node:crypto must never be loaded.
   void (async () => {
-    const [{ db }, { processQueue, reclaimExpiredLeases }, { RUN_QUEUE, executeRun, expireStaleApprovals }, { executeWorkflowRun }, { dispatchAgentOSJob }] = await Promise.all([
+    const [{ db }, { processQueue, reclaimExpiredLeases }, { RUN_QUEUE, executeRun, expireStaleApprovals }, { executeWorkflowRun }, { dispatchAgentOSJob }, { ensureRouterSynced }] = await Promise.all([
       import('@/lib/db'),
       import('@/lib/job-queue'),
       import('@/lib/runs'),
       import('@/lib/workflow-engine'),
       import('@/lib/workers/agentos-dispatcher'),
+      import('@/lib/ai-router'),
     ]);
 
     await recoverStaleJobs(db, reclaimExpiredLeases);
+    // Load env + database-configured AI providers before the first job.
+    const router = await ensureRouterSynced({ force: true }).catch(() => null);
+    if (router) {
+      const summaries = router.getProviderSummaries();
+      console.log(`[AgentOS worker] AI providers registered: ${summaries.map((p) => p.provider).join(', ') || '(none — configuration required)'}`);
+    }
     let lastReclaim = Date.now();
 
     let polling = false;
@@ -86,6 +93,8 @@ function startWorker(): void {
           await expireStaleApprovals().then((n) => {
             if (n > 0) console.log(`[AgentOS worker] expired ${n} stale approval(s)`);
           }).catch(() => undefined);
+          // Pick up provider configs changed through the API by another process.
+          await ensureRouterSynced().catch(() => undefined);
         }
         await processQueue(
           RUN_QUEUE,

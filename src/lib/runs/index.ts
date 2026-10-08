@@ -603,7 +603,7 @@ export async function executeRun(runId: string, options?: { plan?: PlanResult })
     }
     if (!plan) {
       await db.agentOSRun.update({ where: { id: runId }, data: { status: 'planning' } });
-      plan = options?.plan ?? await planObjective(run.objective, companyId);
+      plan = options?.plan ?? await planObjective(run.objective, companyId, { runId });
       await db.agentOSRun.update({ where: { id: runId }, data: { plan: JSON.stringify(plan) } });
       await recordRunEvent({
         runId,
@@ -942,6 +942,7 @@ async function executeStepWithQC(params: {
           companyId,
           agentId: selectedAgent.agentId,
           attempt: repairAttempts,
+          runId,
         });
         lastOutput = repair.repaired;
         lastModel = repair.model;

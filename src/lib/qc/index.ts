@@ -111,6 +111,9 @@ export async function repairOutput(params: {
   companyId?: string;
   agentId?: string;
   attempt: number;
+  /** Observability: ties the routing decision to the run/task being repaired. */
+  runId?: string;
+  taskId?: string;
 }): Promise<RepairResult> {
   const router = getRouter();
   const request: AIRequest = {
@@ -143,7 +146,11 @@ export async function repairOutput(params: {
     temperature: 0.3,
   };
 
-  const response = await router.chat(request, params.companyId, params.agentId);
+  const response = await router.chat(request, params.companyId, params.agentId, {
+    runId: params.runId,
+    taskId: params.taskId,
+    taskType: 'qc.repair',
+  });
   return {
     repaired: response.content,
     model: response.model,
