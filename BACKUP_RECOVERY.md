@@ -20,5 +20,6 @@
 | Artifact/file ACL + checksum recovery | NOT VERIFIED |
 | Workflow/queue recovery after restart | PARTIAL (startup stale-job logic exists; restore drill absent) |
 | MySQL migration rollback on restored copy | NOT VERIFIED |
+| Backup tooling runs on macOS (BSD userland) as well as Linux | VERIFIED for `deploy/scripts/backup.sh` by [`__tests__/integration/backup-restore.test.ts`](__tests__/integration/backup-restore.test.ts) — see [`ALO_LABS_BACKUP_PORTABILITY_REPAIR.md`](ALO_LABS_BACKUP_PORTABILITY_REPAIR.md). `scripts/restore.sh` and `deploy/scripts/deploy.sh` still contain GNU-only constructs (follow-up). |
 
 **Decision: STOP.** See [`ALO_LABS_FORENSIC_AUDIT.md`](ALO_LABS_FORENSIC_AUDIT.md) and the existing legacy [`docs/BACKUP-GUIDE.md`](docs/BACKUP-GUIDE.md). Never treat a manifest flag such as `database_backup_verified: true` as proof of successful restore.
