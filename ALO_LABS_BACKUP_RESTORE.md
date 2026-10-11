@@ -11,3 +11,17 @@ The old archive gathered `storage`, `data` and `public/uploads` but **omitted th
 A disposable application directory contained a real one-row SQLite database, a file uploaded by `LocalStorageProvider` with owner and tenant metadata, and a non-secret `.env`. Running `deploy/scripts/backup.sh` produced `database.sqlite`, `application-storage.tar.gz`, `SHA256SUMS` and `manifest.json`. Both checksum entries verified. The archive was extracted into a separate directory; the restored database returned its expected row and passed `integrity_check`. The restored file's bytes matched its persisted checksum, and `.metadata` retained its company and owner. This was repeated by the **real filesystem integration test** `__tests__/integration/backup-restore.test.ts` (no database or file mocks). Evidence artifacts are private and Git-ignored under `backups/backup-script-exercise/`.
 
 **Not proven:** production DB identity, consistent snapshot of all external object stores, encryption/offsite retention and key custody, source/config/secret-manager recovery, concurrent backup under production load, restored worker/queue/application topology, permissions across all files, MySQL dump/restore, recovery point/time objectives, or production rollback. Archives must never be extracted over live data without a reviewed recovery plan. A checksum and a local row/file test cannot promote the overall gate to PASS. See [recovery runbook](BACKUP_RECOVERY.md).
+
+## Cross-platform repair — 2026-10-11
+
+`deploy/scripts/backup.sh` only ran on GNU coreutils. On macOS it aborted with
+`realpath: illegal option -- m`, and four further GNU-only constructs
+(`readlink -f`, `realpath --relative-to`, `find -printf`, `sha256sum`,
+`mapfile`, `rm --one-file-system`) would have failed after it. All of them are
+now provided by `deploy/scripts/lib/portable-coreutils.sh`, which reproduces
+the GNU semantics — including the symlink resolution the traversal protections
+depend on — with tools that exist on both platforms. The integration test
+exercises the macOS code path on Linux too, through a BSD-userland emulation,
+and `.github/workflows/backup-portability.yml` runs the same test on
+`macos-latest` and `ubuntu-latest`. Full change list and evidence:
+[ALO_LABS_BACKUP_PORTABILITY_REPAIR.md](ALO_LABS_BACKUP_PORTABILITY_REPAIR.md).
