@@ -11,6 +11,18 @@ export async function GET(request: NextRequest) {
   const session = await verifySessionToken(token);
   if (!session) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
   try {
+    // Tenant isolation: list only agents owned by a tenant the caller belongs to.
+    // Previously any valid session could read every tenant's agents. Unowned
+    // legacy rows (companyId NULL) are intentionally not listed until an admin
+    // assigns an owner.
+    const memberships = await db.companyUser.findMany({
+      where: { userId: session.userId },
+      select: { companyId: true },
+    });
+    const tenantIds = memberships.map((m) => m.companyId);
+    if (tenantIds.length === 0) {
+      return NextResponse.json({ data: [], total: 0, page: 1, limit: 50, totalPages: 0 });
+    }
     const { searchParams } = new URL(request.url);
     const search = searchParams.get('search') || '';
     const department = searchParams.get('department') || '';
@@ -19,7 +31,7 @@ export async function GET(request: NextRequest) {
     const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') || '50')));
 
-    const where: Prisma.AgentWhereInput = {};
+    const where: Prisma.AgentWhereInput = { companyId: { in: tenantIds } };
 
     if (search) {
       where.name = { contains: search };

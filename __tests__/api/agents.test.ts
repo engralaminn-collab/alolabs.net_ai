@@ -46,11 +46,16 @@ vi.mock('next/server', () => ({
 const mockAgentFindMany = vi.fn();
 const mockAgentCount = vi.fn();
 
+const mockCompanyUserFindMany = vi.fn();
+
 vi.mock('@/lib/db', () => ({
   db: {
     agent: {
       findMany: (...args: unknown[]) => mockAgentFindMany(...args),
       count: (...args: unknown[]) => mockAgentCount(...args),
+    },
+    companyUser: {
+      findMany: (...args: unknown[]) => mockCompanyUserFindMany(...args),
     },
   },
 }));
@@ -89,6 +94,37 @@ describe('GET /api/agents', () => {
     vi.clearAllMocks();
     mockAgentFindMany.mockResolvedValue(mockAgents);
     mockAgentCount.mockResolvedValue(2);
+    mockCompanyUserFindMany.mockResolvedValue([{ companyId: 'tenant-a' }]);
+  });
+
+  it('scopes the query to the caller tenant memberships (tenant isolation)', async () => {
+    const request = createMockRequest('http://localhost/api/agents');
+    await GET(request);
+    expect(mockAgentFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ companyId: { in: ['tenant-a'] } }) }),
+    );
+    expect(mockAgentCount).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ companyId: { in: ['tenant-a'] } }) }),
+    );
+  });
+
+  it('returns no agents to a caller with no tenant membership, without querying agents', async () => {
+    mockCompanyUserFindMany.mockResolvedValue([]);
+    const request = createMockRequest('http://localhost/api/agents');
+    const response = await GET(request);
+    const data = await response.json();
+    expect(data.data).toEqual([]);
+    expect(data.total).toBe(0);
+    expect(mockAgentFindMany).not.toHaveBeenCalled();
+  });
+
+  it('never filters on a tenant the caller does not belong to', async () => {
+    mockCompanyUserFindMany.mockResolvedValue([{ companyId: 'tenant-a' }, { companyId: 'tenant-b' }]);
+    const request = createMockRequest('http://localhost/api/agents?search=bot');
+    await GET(request);
+    const call = mockAgentFindMany.mock.calls[0][0] as { where: { companyId: { in: string[] } } };
+    expect(call.where.companyId.in.sort()).toEqual(['tenant-a', 'tenant-b']);
+    expect(call.where.companyId.in).not.toContain('tenant-c');
   });
 
   it('should return agent list', async () => {
