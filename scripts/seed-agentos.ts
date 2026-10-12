@@ -119,7 +119,7 @@ async function main() {
   // ── 5. Starter AI employees ──
   const agents = [
     {
-      agentId: 'AGENT-0001',
+      agentId: 'STARTER-0001',
       name: 'Research Agent',
       slug: 'research-agent',
       departmentSlug: 'research',
@@ -130,7 +130,7 @@ async function main() {
       allowedTools: JSON.stringify(['web_search', 'database']),
     },
     {
-      agentId: 'AGENT-0002',
+      agentId: 'STARTER-0002',
       name: 'Analysis Agent',
       slug: 'analysis-agent',
       departmentSlug: 'data',
@@ -141,7 +141,7 @@ async function main() {
       allowedTools: JSON.stringify(['database']),
     },
     {
-      agentId: 'AGENT-0003',
+      agentId: 'STARTER-0003',
       name: 'Verification Agent',
       slug: 'verification-agent',
       departmentSlug: 'qa',
@@ -152,7 +152,7 @@ async function main() {
       allowedTools: JSON.stringify(['web_search']),
     },
     {
-      agentId: 'AGENT-0004',
+      agentId: 'STARTER-0004',
       name: 'Writer Agent',
       slug: 'writer-agent',
       departmentSlug: 'content',
