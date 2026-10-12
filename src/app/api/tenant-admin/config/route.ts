@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import { requireRole } from '@/lib/api-auth'
+import { tenantTarget } from '@/lib/api/secure-route'
 import { parseBody } from '@/lib/validators'
 
 const tenantConfigUpdateSchema = z.object({
@@ -22,13 +23,15 @@ const tenantConfigUpdateSchema = z.object({
 // GET: Get tenant config for a company
 export async function GET(request: NextRequest) {
   try {
-    await requireRole('super_admin')
+    const user = await requireRole('super_admin')
     const { searchParams } = new URL(request.url)
     const companyId = searchParams.get('companyId')
 
     if (!companyId) {
       return NextResponse.json({ error: 'companyId query parameter is required' }, { status: 400 })
     }
+    const target = tenantTarget(user, companyId)
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status })
 
     const company = await db.company.findUnique({ where: { id: companyId } })
     if (!company) {
@@ -72,6 +75,8 @@ export async function POST(request: NextRequest) {
     if (!companyId) {
       return NextResponse.json({ error: 'companyId is required' }, { status: 400 })
     }
+    const target = tenantTarget(user, companyId)
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status })
 
     const company = await db.company.findUnique({ where: { id: companyId } })
     if (!company) {
@@ -138,6 +143,8 @@ export async function PUT(req: NextRequest) {
     if (parsed.error) return NextResponse.json({ error: parsed.error.message }, { status: parsed.error.status })
 
     const { companyId, config, ...rest } = parsed.data
+    const target = tenantTarget(user, companyId)
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status })
 
     const existing = await db.tenantConfig.findUnique({ where: { companyId } })
     if (!existing) {
@@ -190,6 +197,8 @@ export async function DELETE(req: NextRequest) {
     if (!companyId) {
       return NextResponse.json({ error: 'companyId is required' }, { status: 400 })
     }
+    const target = tenantTarget(user, companyId)
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status })
 
     const existing = await db.tenantConfig.findUnique({ where: { companyId } })
     if (!existing) {

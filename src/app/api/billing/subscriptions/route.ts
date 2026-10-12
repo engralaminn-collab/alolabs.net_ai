@@ -1,3 +1,4 @@
+import { jsonResponse, secureRoute } from '@/lib/api/secure-route';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { requireAuth } from '@/lib/api-auth';
@@ -21,9 +22,11 @@ async function generateInvoiceNumber(): Promise<string> {
   return `${prefix}${String(nextNum).padStart(4, '0')}`;
 }
 
-export async function GET() {
-  try {
+export const GET = secureRoute(
+  { resource: 'billing.subscriptions', action: 'read', rateLimit: { limit: 300, windowMs: 60_000 } },
+  async (context) => {
     const subscriptions = await db.subscription.findMany({
+      where: context.tenantWhere(),
       orderBy: { createdAt: 'desc' },
       include: {
         plan: {
@@ -60,11 +63,9 @@ export async function GET() {
       createdAt: s.createdAt,
     }));
 
-    return NextResponse.json({ data });
-  } catch (error) {
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
-  }
-}
+    return jsonResponse({ data }, context.requestId);
+  },
+);
 
 export async function POST(request: NextRequest) {
   try {

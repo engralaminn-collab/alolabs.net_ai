@@ -1,15 +1,13 @@
+import { requireAuth } from '@/lib/api-auth'
+import { tenantTarget } from '@/lib/api/secure-route'
 import { db } from '@/lib/db'
 import { NextRequest, NextResponse } from 'next/server'
 
 export async function GET(request: NextRequest) {
-  // Auth check
-  const authHeader = request.headers.get('authorization');
-  const token = authHeader?.replace('Bearer ', '');
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const { verifySessionToken } = await import('@/lib/auth');
-  const session = await verifySessionToken(token);
-  if (!session) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
   try {
+    // Tenant comes from the authenticated principal; a query value naming
+    // another tenant is refused.
+    const user = await requireAuth()
     const { searchParams } = new URL(request.url)
     const companyId = searchParams.get('companyId')
 
@@ -19,6 +17,8 @@ export async function GET(request: NextRequest) {
         { status: 400 }
       )
     }
+    const target = tenantTarget(user, companyId)
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status })
 
     // Validate company exists
     const company = await db.company.findUnique({
@@ -78,6 +78,9 @@ export async function GET(request: NextRequest) {
       total: workflows.length,
     })
   } catch (error) {
+    if (error instanceof Error && error.message === 'Unauthorized') {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
     console.error('[Company Allowed Workflows] Error:', error)
     return NextResponse.json(
       { error: 'Failed to fetch allowed workflows' },

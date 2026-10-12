@@ -1,17 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { requireRole } from '@/lib/api-auth'
+import { tenantTarget } from '@/lib/api/secure-route'
 
 // GET: List users for a tenant (from CompanyUser table joined with User)
 export async function GET(request: NextRequest) {
   try {
-    await requireRole('super_admin', 'admin')
+    const user = await requireRole('super_admin', 'admin')
     const { searchParams } = new URL(request.url)
     const companyId = searchParams.get('companyId')
 
     if (!companyId) {
       return NextResponse.json({ error: 'companyId query parameter is required' }, { status: 400 })
     }
+    const target = tenantTarget(user, companyId)
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status })
 
     const company = await db.company.findUnique({ where: { id: companyId } })
     if (!company) {
@@ -58,13 +61,16 @@ export async function GET(request: NextRequest) {
 // POST: Add user to tenant
 export async function POST(request: NextRequest) {
   try {
-    await requireRole('super_admin', 'admin')
+    // `admin` is the acting principal; `user` below is the invited account.
+    const admin = await requireRole('super_admin', 'admin')
     const body = await request.json()
     const { companyId, userId, role } = body
 
     if (!companyId || !userId) {
       return NextResponse.json({ error: 'companyId and userId are required' }, { status: 400 })
     }
+    const target = tenantTarget(admin, companyId)
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status })
 
     const company = await db.company.findUnique({ where: { id: companyId } })
     if (!company) {
@@ -101,7 +107,7 @@ export async function POST(request: NextRequest) {
 // DELETE: Remove user from tenant
 export async function DELETE(request: NextRequest) {
   try {
-    await requireRole('super_admin', 'admin')
+    const user = await requireRole('super_admin', 'admin')
     const { searchParams } = new URL(request.url)
     const companyId = searchParams.get('companyId')
     const userId = searchParams.get('userId')
@@ -109,6 +115,8 @@ export async function DELETE(request: NextRequest) {
     if (!companyId || !userId) {
       return NextResponse.json({ error: 'companyId and userId query parameters are required' }, { status: 400 })
     }
+    const target = tenantTarget(user, companyId)
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status })
 
     const existing = await db.companyUser.findUnique({
       where: { companyId_userId: { companyId, userId } },

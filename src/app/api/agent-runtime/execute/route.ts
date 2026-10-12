@@ -1,8 +1,16 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getExecutionEngine } from '@/lib/agent-runtime';
-import { getAuthUser } from '@/lib/api-auth';
-import { db } from '@/lib/db';
 import { z } from 'zod';
+import { getExecutionEngine } from '@/lib/agent-runtime';
+import { db } from '@/lib/db';
+import { jsonResponse, notFound, secureRoute } from '@/lib/api/secure-route';
+
+/**
+ * Agent execution — authenticated, tenant-scoped, role-checked and rate
+ * limited.
+ *
+ * Previously: authenticated inline, but every execution ran as the hard-coded
+ * pseudo-tenant `default-company`, and an expensive model call had no rate
+ * limit. Executions now run under the caller's own tenant.
+ */
 
 const ExecuteSchema = z.object({
   agentId: z.string().min(1, 'agentId is required'),
@@ -16,72 +24,57 @@ const ExecuteSchema = z.object({
   mode: z.enum(['sync', 'async']).optional(),
 });
 
-export async function POST(request: NextRequest) {
-  try {
-    const user = await getAuthUser();
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+const EXECUTE_ROLES = ['super_admin', 'admin', 'manager', 'operator'];
 
-    const body = await request.json();
-    const parsed = ExecuteSchema.safeParse(body);
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: 'Validation failed', details: parsed.error.issues },
-        { status: 400 },
-      );
-    }
+export const POST = secureRoute(
+  {
+    resource: 'agent-runtime.execute',
+    action: 'execute',
+    roles: EXECUTE_ROLES,
+    // Model execution is expensive: bound it per principal, not per IP.
+    rateLimit: { limit: 60, windowMs: 60_000 },
+    body: ExecuteSchema,
+    bodyStatus: 400, // unchanged from the previous contract
+  },
+  async (context) => {
+    const { agentId, task, priority, systemPrompt, context: taskContext, tools, maxTokens, timeoutMs, mode } = context.body;
 
-    const { agentId, task, priority, systemPrompt, context, tools, maxTokens, timeoutMs, mode } = parsed.data;
-
-    // Verify agent exists
-    const agent = await db.agent.findUnique({ where: { agentId: agentId } });
-    if (!agent) {
-      return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
-    }
+    // Tenant-scoped lookup: an agent that is not shared with this company is
+    // indistinguishable from one that does not exist.
+    const agent = await db.agent.findFirst({
+      where: { agentId, agentCompanyAccess: { some: { companyId: context.companyId } } },
+      select: { id: true },
+    });
+    if (!agent) throw notFound('Agent not found');
 
     const engine = getExecutionEngine();
     const result = await engine.execute({
       agentId,
-      companyId: 'default-company',
-      userId: user.userId,
+      companyId: context.companyId,
+      userId: context.principal.userId,
       task,
       priority,
       systemPrompt,
-      context,
+      context: taskContext,
       tools,
       maxTokens,
       timeoutMs,
       mode,
     });
 
-    return NextResponse.json({ success: true, data: result });
-  } catch (error) {
-    console.error('[/api/agent-runtime/execute]', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Internal server error' },
-      { status: 500 },
-    );
-  }
-}
+    return jsonResponse({ success: true, data: result }, context.requestId);
+  },
+);
 
-export async function DELETE(request: NextRequest) {
-  try {
-    const user = await getAuthUser();
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
-    const { searchParams } = new URL(request.url);
-    const taskId = searchParams.get('taskId');
-    if (!taskId) {
-      return NextResponse.json({ error: 'taskId is required' }, { status: 400 });
-    }
-
-    const engine = getExecutionEngine();
-    const cancelled = engine.cancel(taskId);
-
-    return NextResponse.json({ success: true, cancelled });
-  } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Internal server error' },
-      { status: 500 },
-    );
-  }
-}
+export const DELETE = secureRoute(
+  {
+    resource: 'agent-runtime.execute',
+    action: 'delete',
+    roles: EXECUTE_ROLES,
+    query: z.object({ taskId: z.string().min(1, 'taskId is required') }),
+  },
+  async (context) => {
+    const cancelled = getExecutionEngine().cancel((context.query as { taskId: string }).taskId);
+    return jsonResponse({ success: true, cancelled }, context.requestId);
+  },
+);

@@ -1,68 +1,67 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getExecutionEngine } from '@/lib/agent-runtime';
-import { getAuthUser } from '@/lib/api-auth';
 import { db } from '@/lib/db';
+import { jsonResponse, notFound, secureRoute } from '@/lib/api/secure-route';
 
 /**
- * V1 Agent Execute — now backed by the real Agent Execution Engine.
- * Legacy endpoint, forwards to /api/agent-runtime/execute
+ * V1 agent execution — authenticated, tenant-aware, validated and rate limited.
+ *
+ * Previously: a bare inline token check, `companyId: user.userId` (a user id
+ * used as a tenant id), no tenant check on the agent lookup and a `deleteMany`
+ * keyed only on the agent id. This version keeps the public v1 response shape
+ * but executes under the caller's real tenant.
  */
-export async function POST(request: NextRequest) {
-  try {
-    const user = await getAuthUser();
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const body = await request.json();
-    const { agentId, message, sessionId } = body;
+const executeSchema = z.object({
+  agentId: z.string().min(1, 'agentId is required'),
+  task: z.string().min(1, 'task is required'),
+  maxTokens: z.number().int().positive().max(128000).optional(),
+  timeoutMs: z.number().int().positive().max(600000).optional(),
+});
 
-    if (typeof agentId !== 'string' || agentId.trim().length === 0) {
-      return NextResponse.json(
-        { error: 'agentId is required and must be a non-empty string' },
-        { status: 400 },
-      );
-    }
+export const POST = secureRoute(
+  {
+    resource: 'agent-runtime.execute.v1',
+    action: 'execute',
+    roles: ['super_admin', 'admin', 'manager', 'operator'],
+    rateLimit: { limit: 60, windowMs: 60_000 },
+    body: executeSchema,
+    bodyStatus: 400, // unchanged from the previous contract
+  },
+  async (context) => {
+    const { agentId, task, maxTokens, timeoutMs } = context.body;
 
-    const taskInput = typeof message === 'string' ? message : JSON.stringify(message);
-    if (!taskInput || taskInput.trim().length === 0) {
-      return NextResponse.json(
-        { error: 'message is required' },
-        { status: 400 },
-      );
-    }
+    const agent = await db.agent.findFirst({
+      where: { agentId, agentCompanyAccess: { some: { companyId: context.companyId } } },
+      select: { id: true },
+    });
+    if (!agent) throw notFound('Agent not found');
 
-    // Verify agent exists
-    const agent = await db.agent.findUnique({ where: { id: agentId } });
-    if (!agent) {
-      return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
-    }
-
-    // Execute via real engine
     const engine = getExecutionEngine();
     const result = await engine.execute({
       agentId,
-      companyId: user.userId,
-      userId: user.userId,
-      task: taskInput,
-      mode: 'async',
-      context: sessionId ? { sessionId } : undefined,
+      companyId: context.companyId,
+      userId: context.principal.userId,
+      task,
+      maxTokens,
+      timeoutMs,
     });
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        agentId,
-        sessionId: sessionId ?? null,
-        taskId: result.id,
-        status: result.status,
-        message: `Agent "${agentId}" execution ${result.status}.`,
-        timestamp: new Date().toISOString(),
-      },
-    });
-  } catch (error) {
-    console.error('[/api/v1/agents/execute]', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Internal server error' },
-      { status: 500 },
-    );
-  }
-}
+    return jsonResponse({ success: true, data: result }, context.requestId);
+  },
+);
+
+export const DELETE = secureRoute(
+  {
+    resource: 'agent-runtime.execute.v1',
+    action: 'delete',
+    roles: ['super_admin', 'admin', 'manager', 'operator'],
+    body: z.object({ agentId: z.string().min(1, 'agentId is required') }),
+    bodyStatus: 400,
+  },
+  async (context) => {
+    const { agentId } = context.body;
+    const result = await db.agentRun.deleteMany({ where: { agentId, companyId: context.companyId } });
+    return jsonResponse({ success: true, data: { deleted: result.count } }, context.requestId);
+  },
+);

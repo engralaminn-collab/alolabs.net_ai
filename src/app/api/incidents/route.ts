@@ -9,7 +9,7 @@ import {
   buildOrderBy,
   paginatedResponse,
 } from '@/lib/validators'
-import { requireAuth } from '@/lib/api-auth'
+import { requireCompanyAuth } from '@/lib/api-auth'
 
 const incidentCreateSchema = z.object({
   title: z.string().min(1),
@@ -37,7 +37,7 @@ const incidentUpdateSchema = z.object({
 // GET /api/incidents
 export async function GET(request: NextRequest) {
   try {
-    await requireAuth()
+    const user = await requireCompanyAuth()
     const { searchParams } = new URL(request.url)
     const parsed = parseQuery(paginationQuery, searchParams)
     if (parsed.error) return NextResponse.json({ error: parsed.error.message }, { status: parsed.error.status })
@@ -48,11 +48,12 @@ export async function GET(request: NextRequest) {
     const statusFilter = searchParams.get('status')
     const severityFilter = searchParams.get('severity')
     const typeFilter = searchParams.get('type')
-    const companyIdFilter = searchParams.get('companyId')
     if (statusFilter) filters.status = statusFilter
     if (severityFilter) filters.severity = severityFilter
     if (typeFilter) filters.type = typeFilter
-    if (companyIdFilter) filters.companyId = companyIdFilter
+    // The tenant comes from the principal; a `companyId` query value is ignored
+    // so a caller cannot read another tenant's incidents.
+    filters.companyId = user.companyId
 
     const where = buildWhereClause(['title', 'description'], search, filters)
     const orderBy = buildOrderBy(sort, order)
@@ -68,7 +69,7 @@ export async function GET(request: NextRequest) {
     ])
 
     // Compute stats
-    const allIncidents = await db.incident.findMany({ select: { status: true } })
+    const allIncidents = await db.incident.findMany({ where: { companyId: user.companyId }, select: { status: true } })
     const stats = {
       open: allIncidents.filter((i) => i.status === 'open').length,
       investigating: allIncidents.filter((i) => i.status === 'investigating').length,
@@ -90,7 +91,7 @@ export async function GET(request: NextRequest) {
 // POST /api/incidents
 export async function POST(request: NextRequest) {
   try {
-    const user = await requireAuth()
+    const user = await requireCompanyAuth()
     const body = await request.json()
     const parsed = parseBody(incidentCreateSchema, body)
     if (parsed.error) return NextResponse.json({ error: parsed.error.message }, { status: parsed.error.status })
@@ -104,7 +105,7 @@ export async function POST(request: NextRequest) {
         status: data.status,
         type: data.type,
         assignedTo: data.assignedTo,
-        companyId: data.companyId,
+        companyId: user.companyId,
         metadata: JSON.stringify(data.metadata || {}),
       },
     })
@@ -131,14 +132,16 @@ export async function POST(request: NextRequest) {
 // PUT /api/incidents — update by id in body
 export async function PUT(request: NextRequest) {
   try {
-    const user = await requireAuth()
+    const user = await requireCompanyAuth()
     const body = await request.json()
     const parsed = parseBody(incidentUpdateSchema, body)
     if (parsed.error) return NextResponse.json({ error: parsed.error.message }, { status: parsed.error.status })
 
     const { id, resolution, metadata, ...rest } = parsed.data
 
-    const existing = await db.incident.findUnique({ where: { id } })
+    // Scoped to the principal's tenant: another tenant's incident is
+    // indistinguishable from one that does not exist.
+    const existing = await db.incident.findFirst({ where: { id, companyId: user.companyId } })
     if (!existing) {
       return NextResponse.json({ error: 'Incident not found' }, { status: 404 })
     }
@@ -185,14 +188,14 @@ export async function PUT(request: NextRequest) {
 // DELETE /api/incidents
 export async function DELETE(request: NextRequest) {
   try {
-    const user = await requireAuth()
+    const user = await requireCompanyAuth()
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')
     if (!id) {
       return NextResponse.json({ error: 'id is required' }, { status: 400 })
     }
 
-    const existing = await db.incident.findUnique({ where: { id } })
+    const existing = await db.incident.findFirst({ where: { id, companyId: user.companyId } })
     if (!existing) {
       return NextResponse.json({ error: 'Incident not found' }, { status: 404 })
     }

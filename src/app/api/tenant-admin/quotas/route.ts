@@ -1,17 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { requireRole } from '@/lib/api-auth'
+import { tenantTarget } from '@/lib/api/secure-route'
 
 // GET: Get usage quotas for a company
 export async function GET(request: NextRequest) {
   try {
-    await requireRole('admin', 'super_admin');
+    const user = await requireRole('admin', 'super_admin');
     const { searchParams } = new URL(request.url)
     const companyId = searchParams.get('companyId')
 
     if (!companyId) {
       return NextResponse.json({ error: 'companyId query parameter is required' }, { status: 400 })
     }
+    const target = tenantTarget(user, companyId)
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status })
 
     // Verify company exists
     const company = await db.company.findUnique({

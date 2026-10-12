@@ -1,6 +1,12 @@
+import { z } from 'zod';
+import { jsonResponse, secureRoute } from '@/lib/api/secure-route';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { requireAuth } from '@/lib/api-auth';
+
+/** Invoice listing is now authenticated and tenant-scoped; the `companyId`
+ *  query filter was removed because the tenant comes from the principal. */
+const invoiceListQuery = z.object({ status: z.string().max(40).optional() });
 
 async function generateInvoiceNumber(): Promise<string> {
   const year = new Date().getFullYear();
@@ -21,18 +27,13 @@ async function generateInvoiceNumber(): Promise<string> {
   return `${prefix}${String(nextNum).padStart(4, '0')}`;
 }
 
-export async function GET(request: NextRequest) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const companyId = searchParams.get('companyId');
-    const status = searchParams.get('status');
-
-    const where: Record<string, unknown> = {};
-    if (companyId) where.companyId = companyId;
-    if (status) where.status = status;
+export const GET = secureRoute(
+  { resource: 'billing.invoices', action: 'read', query: invoiceListQuery, rateLimit: { limit: 300, windowMs: 60_000 } },
+  async (context) => {
+    const { status } = context.query as z.infer<typeof invoiceListQuery>;
 
     const invoices = await db.invoice.findMany({
-      where: Object.keys(where).length > 0 ? where : undefined,
+      where: context.tenantWhere(status ? { status } : {}),
       orderBy: { createdAt: 'desc' },
       include: {
         company: {
@@ -69,11 +70,9 @@ export async function GET(request: NextRequest) {
       createdAt: inv.createdAt,
     }));
 
-    return NextResponse.json({ data });
-  } catch (error) {
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
-  }
-}
+    return jsonResponse({ data }, context.requestId);
+  },
+);
 
 export async function POST(request: NextRequest) {
   try {
