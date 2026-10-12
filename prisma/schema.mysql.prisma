@@ -73,9 +73,15 @@ model Department {
   agentCount  Int      @default(20)
   sortOrder   Int      @default(0)
   status      String   @default("active")
+  // Tenant that owns this department (null = legacy/unowned row).
+  companyId   String?
+  // Provisioning profile: budget, allowed models/providers, knowledge sources, KPIs,
+  // orchestrator agent business key and the provisioning marker (see src/lib/workforce).
+  runtimeProfile String @db.LongText @default("{}")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  company             Company?             @relation(fields: [companyId], references: [id])
   manager             User?                @relation(fields: [managerId], references: [id])
   agents              Agent[]
   departmentMemories  DepartmentMemory[]
@@ -84,6 +90,7 @@ model Department {
   promptTemplates     PromptTemplate[]
   knowledgeNodes      KnowledgeNode[]
   trainingSources     TrainingSource[]
+  @@index([companyId])
 }
 
 model Agent {
@@ -111,9 +118,17 @@ model Agent {
   productivityRules String   @default("{}") @db.LongText
   status            String   @default("active")
   version           Int      @default(1)
+  // Tenant that owns this agent (null = legacy row created before tenant ownership).
+  companyId         String?
+  // Primary system instructions used by the runtime when this agent executes a task.
+  systemInstructions String @db.LongText @default("")
+  // Model configuration, knowledge scope, memory policy, resource limits, task queue,
+  // evaluation profile and provisioning marker (see src/lib/workforce).
+  runtimeProfile    String @db.LongText @default("{}")
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
+  company                Company?               @relation(fields: [companyId], references: [id])
   department             Department             @relation(fields: [departmentId], references: [id])
   versions               AgentVersion[]
   permissions            AgentPermission[]
@@ -139,6 +154,7 @@ model Agent {
   evaluations            AgentEvaluation[]
 
   @@index([departmentId])
+  @@index([companyId, departmentId])
 }
 
 model AgentVersion {
@@ -703,6 +719,8 @@ model Company {
   collaborationSessions CollaborationSession[]
   tokenUsages           TokenUsage[]
   agentInstances        AgentInstance[]
+  departments           Department[]
+  agents                Agent[]
   agentAlerts           AgentAlert[]
   agentCommunications   AgentCommunication[]
   syncLogs              CrossSystemSyncLog[]
