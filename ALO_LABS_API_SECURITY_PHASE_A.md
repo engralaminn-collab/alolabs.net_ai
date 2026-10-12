@@ -108,6 +108,8 @@ Full suite: **919 passed, 28 skipped, 5 suites failed** — the 5 failures are `
 - `tsc --noEmit`: 417 errors, **all pre-existing**; diffed against a clean `HEAD` worktree — **zero new errors**, one pre-existing error fixed.
 - `eslint` clean on every changed file.
 
+**CI (`gh pr checks 11`) — cannot be evidenced.** Three workflows ran (CI: "TypeScript, tests, lint, and build"; Security Scan: "Dependency Audit" + "Secret Scan"). All failed in 1–2 seconds with **zero executed steps** (the API reports `"steps": []`), which means no runner ever picked the job up. This is pre-existing and unrelated to this change: every workflow run in the repository fails the same way, including the runs for the already-merged PR #10 and for `main` pushes (`gh api .../actions/runs`). So GitHub Actions results are **unverified**, not "passing" and not "failing on my code".
+
 **Not verified (blocked, stated plainly)**
 - `next build` / production build: fails at the type-check step on the same 417 pre-existing errors. Root cause is `prisma generate` failing here (`binaries.prisma.sh` is unreachable from the sandbox), so `@prisma/client` has no generated types. Not caused by this change; the build therefore cannot be evidenced here.
 - Integration tests against a real database: same Prisma blocker.
