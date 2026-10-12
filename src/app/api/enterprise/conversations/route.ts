@@ -1,82 +1,97 @@
 /**
  * ALO Labs AI-EOS — Conversations API
  * GET  /           — List conversations for current user
- * GET  /[id]       — Get conversation with messages
- * DELETE /[id]     — Archive a conversation
+ * GET  /?id=…      — Get conversation with messages
+ * DELETE /?id=…    — Archive a conversation
+ *
+ * Previously both handlers fell back to `{ userId: 'anonymous', role: 'viewer' }`
+ * when unauthenticated, which made the endpoint public (every anonymous caller
+ * shared one identity) and let any caller read or archive any conversation id.
+ * Both handlers now require an authenticated principal and verify ownership.
  */
 
-import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getAuthUser } from '@/lib/api-auth';
 import { getOrchestrator } from '@/lib/orchestrator';
 import { db } from '@/lib/db';
+import { jsonResponse, notFound, secureRoute } from '@/lib/api/secure-route';
 
-// ─── GET: List conversations ──────────────────────────────────────
-export async function GET(request: NextRequest) {
-  try {
-    const user = await getAuthUser() || { userId: 'anonymous', role: 'viewer' };
-    const url = new URL(request.url);
-    const conversationId = url.searchParams.get('id');
+type ConversationLike = { id: string; userId?: unknown; companyId?: unknown };
 
-    if (conversationId) {
-      // Get single conversation with messages
-      const orchestrator = getOrchestrator();
-      const conversation = await orchestrator.getConversation(conversationId);
+/**
+ * A conversation belongs to the user that created it, or (for shared
+ * conversations) to the principal's company. Anything else is reported as
+ * 404 — never 403 — so ids cannot be probed.
+ */
+function assertOwnership(conversation: ConversationLike | null | undefined, userId: string, companyId: string | null): void {
+  if (!conversation) throw notFound('Conversation not found');
+  const ownsByUser = typeof conversation.userId === 'string' && conversation.userId === userId;
+  const ownsByCompany = Boolean(companyId) && conversation.companyId === companyId;
+  if (!ownsByUser && !ownsByCompany) throw notFound('Conversation not found');
+}
 
-      if (!conversation) {
-        return NextResponse.json({ error: 'Conversation not found' }, { status: 404 });
-      }
+const listQuery = z.object({ id: z.string().min(1).max(128).optional() });
 
-      return NextResponse.json({ success: true, data: conversation });
-    }
-
-    // List conversations
+export const GET = secureRoute(
+  {
+    resource: 'enterprise.conversations',
+    action: 'read',
+    tenant: 'optional',
+    query: listQuery,
+    rateLimit: { limit: 300, windowMs: 60_000 },
+  },
+  async (context) => {
+    const { id } = context.query as z.infer<typeof listQuery>;
     const orchestrator = getOrchestrator();
-    const conversations = await orchestrator.listConversations(user.userId);
+    const user = await getAuthUser();
+    const ownerId = user?.userId ?? context.principal.userId;
 
-    return NextResponse.json({
-      success: true,
-      data: conversations.map(c => ({
-        id: c.id,
-        title: c.title,
-        agentId: c.agentId,
-        status: c.status,
-        createdAt: c.createdAt,
-        updatedAt: c.updatedAt,
-        lastMessage: c.messages[0] || null,
-        messageCount: undefined,
-      })),
-    });
-  } catch (error) {
-    console.error('[/api/enterprise/conversations]', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Internal server error' },
-      { status: 500 },
-    );
-  }
-}
-
-// ─── DELETE: Archive a conversation ───────────────────────────────
-export async function DELETE(request: NextRequest) {
-  try {
-    const user = await getAuthUser() || { userId: 'anonymous', role: 'viewer' };
-    const url = new URL(request.url);
-    const conversationId = url.searchParams.get('id');
-
-    if (!conversationId) {
-      return NextResponse.json({ error: 'Conversation ID required' }, { status: 400 });
+    if (id) {
+      const conversation = (await orchestrator.getConversation(id)) as ConversationLike | null;
+      assertOwnership(conversation, ownerId, context.companyId);
+      return jsonResponse({ success: true, data: conversation }, context.requestId);
     }
 
-    await db.conversation.update({
-      where: { id: conversationId },
-      data: { status: 'archived' },
-    });
-
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error('[/api/enterprise/conversations DELETE]', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Internal server error' },
-      { status: 500 },
+    const conversations = await orchestrator.listConversations(ownerId);
+    return jsonResponse(
+      {
+        success: true,
+        data: conversations.map((c) => ({
+          id: c.id,
+          title: c.title,
+          agentId: c.agentId,
+          status: c.status,
+          createdAt: c.createdAt,
+          updatedAt: c.updatedAt,
+          lastMessage: c.messages[0] || null,
+          messageCount: undefined,
+        })),
+      },
+      context.requestId,
     );
-  }
-}
+  },
+);
+
+export const DELETE = secureRoute(
+  {
+    resource: 'enterprise.conversations',
+    action: 'delete',
+    tenant: 'optional',
+    query: z.object({ id: z.string().min(1, 'Conversation ID required').max(128) }),
+    rateLimit: { limit: 120, windowMs: 60_000 },
+  },
+  async (context) => {
+    const conversationId = (context.query as { id: string }).id;
+    const user = await getAuthUser();
+    const ownerId = user?.userId ?? context.principal.userId;
+
+    const conversation = await db.conversation.findUnique({
+      where: { id: conversationId },
+      select: { id: true, userId: true, companyId: true },
+    });
+    assertOwnership(conversation, ownerId, context.companyId);
+
+    await db.conversation.update({ where: { id: conversationId }, data: { status: 'archived' } });
+    return jsonResponse({ success: true }, context.requestId);
+  },
+);

@@ -1,8 +1,10 @@
 // ALO Labs AIOS — WhatsApp Webhook API
 // Handles verification and incoming message processing
 
+import { randomUUID } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { recordSecurityEvent } from '@/lib/api/secure-route';
 import { WhatsAppBusinessClient } from '@/lib/whatsapp/client';
 import { WhatsAppAIHandler } from '@/lib/whatsapp/ai-handler';
 import type {
@@ -132,22 +134,50 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
     }
 
-    // Verify webhook signature
+    // Verify webhook signature.
+    //
+    // This endpoint is unauthenticated by design (Meta calls it), so the HMAC
+    // signature IS the authentication. Previously a mismatch only wrote a
+    // warning to the log and processing continued, which let anyone forge
+    // inbound messages. A missing or invalid signature is now rejected with
+    // 401 whenever WHATSAPP_APP_SECRET is configured.
     const signature = request.headers.get('x-hub-signature-256');
     const appSecret = process.env.WHATSAPP_APP_SECRET;
-    if (appSecret && signature) {
+
+    if (appSecret) {
+      if (!signature) {
+        void recordSecurityEvent({
+          type: 'webhook_signature_missing',
+          severity: 'high',
+          resource: 'whatsapp.webhook',
+          action: 'receive',
+          requestId: randomUUID(),
+          details: { reason: 'missing x-hub-signature-256' },
+        });
+        return NextResponse.json({ error: 'Missing signature' }, { status: 401 });
+      }
+
       const crypto = await import('node:crypto');
       const expected = 'sha256=' + crypto.createHmac('sha256', appSecret).update(rawBody).digest('hex');
+      let valid = false;
       try {
         const bufA = Buffer.from(signature);
         const bufB = Buffer.from(expected);
-        if (bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB)) {
-          // Signature valid
-        } else {
-          console.warn('WhatsApp webhook signature mismatch');
-        }
+        valid = bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
       } catch {
-        console.warn('WhatsApp webhook signature check failed');
+        valid = false;
+      }
+
+      if (!valid) {
+        void recordSecurityEvent({
+          type: 'webhook_signature_invalid',
+          severity: 'critical',
+          resource: 'whatsapp.webhook',
+          action: 'receive',
+          requestId: randomUUID(),
+          details: { reason: 'hmac mismatch' },
+        });
+        return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
       }
     }
 

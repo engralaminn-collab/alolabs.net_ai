@@ -1,28 +1,51 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getMemoryStore } from '@/lib/memory';
-import { getAuthUser } from '@/lib/api-auth';
+import { jsonResponse, notFound, secureRoute } from '@/lib/api/secure-route';
 
-export async function DELETE(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  try {
-    const user = await getAuthUser();
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+/**
+ * Single memory entry — authenticated, validated and ownership-checked.
+ *
+ * Previously: authenticated via inline token helpers only, `purge` took an
+ * arbitrary number of days from the query string, and delete removed any id
+ * after a bare existence check (no ownership verification).
+ */
 
-    const { id } = await params;
+const paramsSchema = z.object({ id: z.string().min(1).max(128) });
+
+/** Memory entries are owned by a user; refuse to touch anybody else's. */
+function assertOwnedBy(entry: unknown, userId: string): void {
+  const owner = (entry ?? {}) as { userId?: unknown; companyId?: unknown };
+  const ownerId = typeof owner.userId === 'string' ? owner.userId : typeof owner.companyId === 'string' ? owner.companyId : null;
+  if (ownerId && ownerId !== userId) throw notFound('Memory entry not found');
+}
+
+export const GET = secureRoute(
+  { resource: 'memory.item', action: 'read', tenant: 'optional', params: paramsSchema, rateLimit: { limit: 600, windowMs: 60_000 } },
+  async (context) => {
     const store = getMemoryStore();
+    const data = await store.get((context.params as { id: string }).id);
+    if (!data) throw notFound('Memory entry not found');
+    return jsonResponse({ success: true, data }, context.requestId);
+  },
+);
+
+export const DELETE = secureRoute(
+  {
+    resource: 'memory.item',
+    action: 'delete',
+    tenant: 'optional',
+    params: paramsSchema,
+    rateLimit: { limit: 120, windowMs: 60_000 },
+  },
+  async (context) => {
+    const store = getMemoryStore();
+    const { id } = context.params as { id: string };
 
     const entry = await store.get(id);
-    if (!entry) {
-      return NextResponse.json({ error: 'Memory entry not found' }, { status: 404 });
-    }
+    if (!entry) throw notFound('Memory entry not found');
+    assertOwnedBy(entry, context.principal.userId);
 
     await store.delete(id);
-
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error('[/api/memory/[id]] DELETE error:', error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Internal server error' }, { status: 500 });
-  }
-}
+    return jsonResponse({ success: true }, context.requestId);
+  },
+);

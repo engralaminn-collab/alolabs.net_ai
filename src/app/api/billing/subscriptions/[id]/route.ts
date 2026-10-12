@@ -1,15 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { db } from '@/lib/db';
 import { requireAuth } from '@/lib/api-auth';
+import { jsonResponse, notFound, secureRoute } from '@/lib/api/secure-route';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-export async function GET(_request: NextRequest, context: RouteContext) {
-  try {
-    const { id } = await context.params;
+const paramsSchema = z.object({ id: z.string().min(1).max(128) });
 
-    const subscription = await db.subscription.findUnique({
-      where: { id },
+export const GET = secureRoute(
+  { resource: 'billing.subscriptions.item', action: 'read', params: paramsSchema, rateLimit: { limit: 300, windowMs: 60_000 } },
+  async (context) => {
+    const { id } = context.params as z.infer<typeof paramsSchema>;
+
+    const subscription = await db.subscription.findFirst({
+      where: context.tenantWhere({ id }),
       include: {
         plan: {
           select: {
@@ -46,11 +51,9 @@ export async function GET(_request: NextRequest, context: RouteContext) {
       },
     });
 
-    if (!subscription) {
-      return NextResponse.json({ error: 'Subscription not found' }, { status: 404 });
-    }
+    if (!subscription) throw notFound('Subscription not found');
 
-    return NextResponse.json({
+    return jsonResponse({
       id: subscription.id,
       companyId: subscription.companyId,
       company: subscription.company,
@@ -67,11 +70,9 @@ export async function GET(_request: NextRequest, context: RouteContext) {
       recentInvoices: subscription.invoices,
       createdAt: subscription.createdAt,
       updatedAt: subscription.updatedAt,
-    });
-  } catch (error) {
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
-  }
-}
+    }, context.requestId);
+  },
+);
 
 export async function PATCH(request: NextRequest, context: RouteContext) {
   try {

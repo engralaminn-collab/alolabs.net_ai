@@ -1,98 +1,108 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getMemoryStore } from '@/lib/memory';
-import { getAuthUser } from '@/lib/api-auth';
+import { jsonResponse, notFound, secureRoute } from '@/lib/api/secure-route';
 
-export async function POST(request: NextRequest) {
-  try {
-    const user = await getAuthUser();
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+/**
+ * Agent memory — authenticated, validated and rate limited.
+ *
+ * The memory store is partitioned by user (it was already keyed on
+ * `user.userId`), so the tenant requirement stays optional to avoid breaking
+ * principals without a company membership. What this adds is input validation,
+ * rate limiting, and an ownership check on delete: previously any
+ * authenticated caller could delete any memory entry by id.
+ */
 
-    const body = await request.json();
-    const { type, key, content, agentId, scope, rank } = body;
+const memorySchema = z.object({
+  type: z.enum(['short_term', 'long_term', 'episodic']),
+  key: z.string().min(1).max(200),
+  content: z.string().min(1),
+  agentId: z.string().max(128).optional(),
+  scope: z.enum(['private', 'team', 'company']).optional(),
+  rank: z.number().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
 
-    if (!type || !key || !content) {
-      return NextResponse.json({ error: 'type, key, and content are required' }, { status: 400 });
-    }
+const listQuery = z.object({
+  q: z.string().max(500).optional(),
+  agentId: z.string().max(128).optional(),
+  type: z.enum(['short_term', 'long_term', 'episodic']).optional(),
+  id: z.string().max(128).optional(),
+});
 
+/** Memory entries are owned by a user; refuse to touch anybody else's. */
+function assertOwnedBy(entry: unknown, userId: string): void {
+  const owner = (entry ?? {}) as { userId?: unknown; companyId?: unknown };
+  const ownerId = typeof owner.userId === 'string' ? owner.userId : typeof owner.companyId === 'string' ? owner.companyId : null;
+  if (ownerId && ownerId !== userId) throw notFound('Memory entry not found');
+}
+
+export const GET = secureRoute(
+  { resource: 'memory', action: 'read', tenant: 'optional', query: listQuery, rateLimit: { limit: 300, windowMs: 60_000 } },
+  async (context) => {
+    const { q, agentId, type } = context.query as z.infer<typeof listQuery>;
     const store = getMemoryStore();
-    const companyId = user.userId;
+    const scopeId = context.principal.userId;
+
+    if (q) {
+      const results = await store.search({ text: q, agentId: agentId ?? undefined, companyId: scopeId, type, limit: 50 });
+      return jsonResponse({ success: true, data: results, total: results.length }, context.requestId);
+    }
+    if (agentId) {
+      const memories = await store.getByAgent(agentId, type);
+      return jsonResponse({ success: true, data: memories, total: memories.length }, context.requestId);
+    }
+    const stats = await store.getStats();
+    return jsonResponse({ success: true, data: stats }, context.requestId);
+  },
+);
+
+export const POST = secureRoute(
+  {
+    resource: 'memory',
+    action: 'create',
+    tenant: 'optional',
+    body: memorySchema,
+    bodyStatus: 400, // unchanged from the previous contract
+    rateLimit: { limit: 240, windowMs: 60_000 },
+  },
+  async (context) => {
+    const { type, key, content, agentId, scope, rank, metadata } = context.body;
+    const store = getMemoryStore();
+    const companyId = context.principal.userId;
 
     let entry;
     switch (type) {
       case 'short_term':
-        entry = await store.addShortTerm({ agentId: agentId ?? '', companyId, userId: user.userId, key, content });
+        entry = await store.addShortTerm({ agentId: agentId ?? '', companyId, userId: context.principal.userId, key, content });
         break;
       case 'long_term':
-        entry = await store.addLongTerm({ agentId, companyId, userId: user.userId, key, content, scope, rank });
+        entry = await store.addLongTerm({ agentId, companyId, userId: context.principal.userId, key, content, scope, rank });
         break;
       case 'episodic':
-        entry = await store.addEpisodic({ agentId: agentId ?? '', companyId, userId: user.userId, content, metadata: body.metadata });
+        entry = await store.addEpisodic({ agentId: agentId ?? '', companyId, userId: context.principal.userId, content, metadata });
         break;
-      default:
-        return NextResponse.json({ error: `Unknown memory type: ${type}` }, { status: 400 });
     }
 
-    return NextResponse.json({ success: true, data: entry });
-  } catch (error) {
-    console.error('[/api/memory]', error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Internal server error' }, { status: 500 });
-  }
-}
+    return jsonResponse({ success: true, data: entry }, context.requestId);
+  },
+);
 
-export async function DELETE(request: NextRequest) {
-  try {
-    const user = await getAuthUser();
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
-    const { searchParams } = new URL(request.url);
-    const id = searchParams.get('id');
-
-    if (!id) {
-      return NextResponse.json({ error: 'id query parameter is required' }, { status: 400 });
-    }
-
+export const DELETE = secureRoute(
+  {
+    resource: 'memory',
+    action: 'delete',
+    tenant: 'optional',
+    query: z.object({ id: z.string().min(1, 'id query parameter is required').max(128) }),
+    bodyStatus: 400,
+  },
+  async (context) => {
+    const id = (context.query as { id: string }).id;
     const store = getMemoryStore();
     const entry = await store.get(id);
-    if (!entry) {
-      return NextResponse.json({ error: 'Memory entry not found' }, { status: 404 });
-    }
+    if (!entry) throw notFound('Memory entry not found');
+    assertOwnedBy(entry, context.principal.userId);
 
     await store.delete(id);
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error('[/api/memory] DELETE error:', error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Internal server error' }, { status: 500 });
-  }
-}
-
-export async function GET(request: NextRequest) {
-  try {
-    const user = await getAuthUser();
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
-    const { searchParams } = new URL(request.url);
-    const query = searchParams.get('q');
-    const agentId = searchParams.get('agentId');
-    const type = searchParams.get('type') as 'short_term' | 'long_term' | 'episodic' | undefined;
-    const companyId = user.userId;
-
-    const store = getMemoryStore();
-
-    if (query) {
-      const results = await store.search({ text: query, agentId: agentId ?? undefined, companyId, type, limit: 50 });
-      return NextResponse.json({ success: true, data: results, total: results.length });
-    }
-
-    if (agentId) {
-      const memories = await store.getByAgent(agentId, type);
-      return NextResponse.json({ success: true, data: memories, total: memories.length });
-    }
-
-    // Stats
-    const stats = await store.getStats();
-    return NextResponse.json({ success: true, data: stats });
-  } catch (error) {
-    console.error('[/api/memory]', error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : 'Internal server error' }, { status: 500 });
-  }
-}
+    return jsonResponse({ success: true }, context.requestId);
+  },
+);

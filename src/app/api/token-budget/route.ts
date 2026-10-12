@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import { requireAuth } from '@/lib/api-auth'
+import { tenantTarget } from '@/lib/api/secure-route'
 import { parseBody } from '@/lib/validators'
 
 const tokenBudgetUpdateSchema = z.object({
@@ -16,13 +17,15 @@ const tokenBudgetUpdateSchema = z.object({
 // GET /api/token-budget — get token budget for a company (?companyId=xxx)
 export async function GET(request: NextRequest) {
   try {
-    await requireAuth()
+    const user = await requireAuth()
     const { searchParams } = new URL(request.url)
     const companyId = searchParams.get('companyId')
 
     if (!companyId) {
       return NextResponse.json({ error: 'companyId query parameter is required' }, { status: 400 })
     }
+    const target = tenantTarget(user, companyId)
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status })
 
     let budget = await db.tokenBudget.findUnique({ where: { companyId } })
 
@@ -111,6 +114,8 @@ export async function POST(request: NextRequest) {
     if (!companyId || typeof companyId !== 'string') {
       return NextResponse.json({ error: 'companyId is required' }, { status: 400 })
     }
+    const target = tenantTarget(user, companyId)
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status })
 
     const company = await db.company.findUnique({ where: { id: companyId } })
     if (!company) {
@@ -167,6 +172,9 @@ export async function PUT(req: NextRequest) {
 
     const { companyId, ...updateData } = parsed.data
 
+    const target = tenantTarget(user, companyId)
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status })
+
     const existing = await db.tokenBudget.findUnique({ where: { companyId } })
     if (!existing) {
       return NextResponse.json({ error: 'Token budget not found for this company' }, { status: 404 })
@@ -212,6 +220,8 @@ export async function DELETE(req: NextRequest) {
     if (!companyId) {
       return NextResponse.json({ error: 'companyId is required' }, { status: 400 })
     }
+    const target = tenantTarget(user, companyId)
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status })
 
     const existing = await db.tokenBudget.findUnique({ where: { companyId } })
     if (!existing) {

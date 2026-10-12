@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth } from '@/lib/api-auth';
+import { requireCompanyAuth } from '@/lib/api-auth';
 import { getOrchestrator } from '@/lib/orchestrator';
 import { z } from 'zod';
 import { checkEndpointLimit } from '@/lib/security/rate-limiter';
@@ -12,7 +12,8 @@ const AgentRunSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    const user = await requireAuth();
+    // A run must belong to the caller's tenant, not to a shared pseudo tenant.
+    const user = await requireCompanyAuth();
 
     // Rate limit per user
     const rl = await checkEndpointLimit('/api/enterprise/agents/run', user.userId);
@@ -38,7 +39,7 @@ export async function POST(request: NextRequest) {
     const orchestratorResult = await orchestrator.execute({
       task,
       userId: user.userId,
-      companyId: 'default-company',
+      companyId: user.companyId,
       preferredAgentId: agentId,
     });
 

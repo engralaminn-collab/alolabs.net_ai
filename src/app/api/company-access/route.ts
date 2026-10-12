@@ -1,19 +1,19 @@
+import { requireRole } from '@/lib/api-auth';
+import { tenantTarget } from '@/lib/api/secure-route';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
 // GET /api/company-access — get access matrix or list domains/IPs
 export async function GET(request: NextRequest) {
-  // Auth check
-  const authHeader = request.headers.get('authorization');
-  const token = authHeader?.replace('Bearer ', '');
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const { verifySessionToken } = await import('@/lib/auth');
-  const session = await verifySessionToken(token);
-  if (!session) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
   try {
+    // Reading or granting company access is an administrator operation.
+    const user = await requireRole('super_admin', 'admin');
     const { searchParams } = new URL(request.url);
-    const companyId = searchParams.get('companyId');
+    const requestedCompanyId = searchParams.get('companyId');
     const section = searchParams.get('section');
+    const scope = tenantTarget(user, requestedCompanyId);
+    if (!scope.ok) return NextResponse.json({ error: scope.error }, { status: scope.status });
+    const companyId = scope.companyId;
 
     // Handle domain/IP listing
     if (companyId && section === 'domains') {
@@ -87,26 +87,29 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ matrix });
   } catch (error) {
+    if (error instanceof Error && error.message === 'Unauthorized') {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (error instanceof Error && error.message === 'Forbidden') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
 // PATCH /api/company-access — update access level
 export async function PATCH(request: NextRequest) {
-  // Auth check
-  const authHeader = request.headers.get('authorization');
-  const token = authHeader?.replace('Bearer ', '');
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const { verifySessionToken } = await import('@/lib/auth');
-  const session = await verifySessionToken(token);
-  if (!session) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
   try {
+    const user = await requireRole('super_admin', 'admin');
     const body = await request.json();
     const { companyId, group, accessLevel } = body;
 
     if (!companyId || !group || !accessLevel) {
       return NextResponse.json({ error: 'companyId, group, and accessLevel are required' }, { status: 400 });
     }
+
+    const scope = tenantTarget(user, companyId);
+    if (!scope.ok) return NextResponse.json({ error: scope.error }, { status: scope.status });
 
     // Find the company
     const company = await db.company.findUnique({ where: { id: companyId } });
@@ -167,27 +170,32 @@ export async function PATCH(request: NextRequest) {
 
     return NextResponse.json({ success: true });
   } catch (error) {
+    if (error instanceof Error && error.message === 'Unauthorized') {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (error instanceof Error && error.message === 'Forbidden') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
 // POST /api/company-access — add domain or IP allowlist entry
 export async function POST(request: NextRequest) {
-  // Auth check
-  const authHeader = request.headers.get('authorization');
-  const token = authHeader?.replace('Bearer ', '');
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const { verifySessionToken } = await import('@/lib/auth');
-  const session = await verifySessionToken(token);
-  if (!session) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
   try {
+    const user = await requireRole('super_admin', 'admin');
     const body = await request.json();
     const { action } = body;
+    const scope = tenantTarget(user, body.companyId);
+    if (!scope.ok) return NextResponse.json({ error: scope.error }, { status: scope.status });
 
     if (action === 'add-domain') {
       const { companyId, domain, isPrimary } = body;
       if (!companyId || !domain) {
         return NextResponse.json({ error: 'companyId and domain are required' }, { status: 400 });
+      }
+      if (companyId !== scope.companyId) {
+        return NextResponse.json({ error: 'Tenant mismatch: companyId does not match the authenticated principal' }, { status: 403 });
       }
 
       const company = await db.company.findUnique({ where: { id: companyId } });
@@ -212,6 +220,9 @@ export async function POST(request: NextRequest) {
       if (!companyId || !cidr) {
         return NextResponse.json({ error: 'companyId and cidr are required' }, { status: 400 });
       }
+      if (companyId !== scope.companyId) {
+        return NextResponse.json({ error: 'Tenant mismatch: companyId does not match the authenticated principal' }, { status: 403 });
+      }
 
       const company = await db.company.findUnique({ where: { id: companyId } });
       if (!company) {
@@ -231,20 +242,22 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
   } catch (error) {
+    if (error instanceof Error && error.message === 'Unauthorized') {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (error instanceof Error && error.message === 'Forbidden') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
 // DELETE /api/company-access — remove domain or IP allowlist entry
 export async function DELETE(request: NextRequest) {
-  // Auth check
-  const authHeader = request.headers.get('authorization');
-  const token = authHeader?.replace('Bearer ', '');
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const { verifySessionToken } = await import('@/lib/auth');
-  const session = await verifySessionToken(token);
-  if (!session) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
   try {
+    const user = await requireRole('super_admin', 'admin');
+    const scope = tenantTarget(user, null);
+    if (!scope.ok) return NextResponse.json({ error: scope.error }, { status: scope.status });
     const body = await request.json();
     const { action, id } = body;
 
@@ -253,7 +266,8 @@ export async function DELETE(request: NextRequest) {
     }
 
     if (action === 'remove-domain') {
-      const record = await db.companyDomain.findUnique({ where: { id } });
+      // Scoped to the tenant the principal may administer.
+      const record = await db.companyDomain.findFirst({ where: { id, companyId: scope.companyId } });
       if (!record) {
         return NextResponse.json({ error: 'Domain record not found' }, { status: 404 });
       }
@@ -262,7 +276,7 @@ export async function DELETE(request: NextRequest) {
     }
 
     if (action === 'remove-ip') {
-      const record = await db.companyIpAllowlist.findUnique({ where: { id } });
+      const record = await db.companyIpAllowlist.findFirst({ where: { id, companyId: scope.companyId } });
       if (!record) {
         return NextResponse.json({ error: 'IP allowlist record not found' }, { status: 404 });
       }
@@ -272,6 +286,12 @@ export async function DELETE(request: NextRequest) {
 
     return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
   } catch (error) {
+    if (error instanceof Error && error.message === 'Unauthorized') {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (error instanceof Error && error.message === 'Forbidden') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

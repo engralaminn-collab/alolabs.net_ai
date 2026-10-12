@@ -1,18 +1,17 @@
+import { requireAuth } from '@/lib/api-auth';
+import { tenantTarget } from '@/lib/api/secure-route';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
 // GET /api/token-usage — list token usage records
 export async function GET(request: NextRequest) {
-  // Auth check
-  const authHeader = request.headers.get('authorization');
-  const token = authHeader?.replace('Bearer ', '');
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const { verifySessionToken } = await import('@/lib/auth');
-  const session = await verifySessionToken(token);
-  if (!session) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
   try {
+    const user = await requireAuth();
     const { searchParams } = new URL(request.url);
-    const companyId = searchParams.get('companyId');
+    const requestedCompanyId = searchParams.get('companyId');
+    const target = tenantTarget(user, requestedCompanyId);
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status });
+    const companyId = target.companyId;
     const agentId = searchParams.get('agentId');
     const from = searchParams.get('from');
     const to = searchParams.get('to');
@@ -79,6 +78,12 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
+    if (error instanceof Error && error.message === 'Unauthorized') {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (error instanceof Error && error.message === 'Forbidden') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
     console.error('GET /api/token-usage error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -86,20 +91,16 @@ export async function GET(request: NextRequest) {
 
 // POST /api/token-usage — record token usage (checks budget, returns blocked if over limit)
 export async function POST(request: NextRequest) {
-  // Auth check
-  const authHeader = request.headers.get('authorization');
-  const token = authHeader?.replace('Bearer ', '');
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const { verifySessionToken } = await import('@/lib/auth');
-  const session = await verifySessionToken(token);
-  if (!session) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
   try {
+    const user = await requireAuth();
     const body = await request.json();
     const { companyId, agentId, taskId, model, promptTokens, completionTokens, totalTokens, costEstimate } = body;
 
     if (!companyId || typeof companyId !== 'string') {
       return NextResponse.json({ error: 'companyId is required' }, { status: 400 });
     }
+    const target = tenantTarget(user, companyId);
+    if (!target.ok) return NextResponse.json({ error: target.error }, { status: target.status });
 
     const tokens = typeof totalTokens === 'number'
       ? totalTokens
@@ -168,6 +169,12 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
+    if (error instanceof Error && error.message === 'Unauthorized') {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (error instanceof Error && error.message === 'Forbidden') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
     console.error('POST /api/token-usage error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -175,14 +182,10 @@ export async function POST(request: NextRequest) {
 
 // PUT /api/token-usage — update a usage record
 export async function PUT(request: NextRequest) {
-  // Auth check
-  const authHeader = request.headers.get('authorization');
-  const token = authHeader?.replace('Bearer ', '');
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  const { verifySessionToken } = await import('@/lib/auth');
-  const session = await verifySessionToken(token);
-  if (!session) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
   try {
+    const user = await requireAuth();
+    const scope = tenantTarget(user, null);
+    if (!scope.ok) return NextResponse.json({ error: scope.error }, { status: scope.status });
     const body = await request.json();
     const { id, promptTokens, completionTokens, totalTokens, costEstimate, model } = body;
 
@@ -190,7 +193,9 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'id is required' }, { status: 400 });
     }
 
-    const existing = await db.tokenUsage.findUnique({ where: { id } });
+    // Scoped to the principal's tenant: another tenant's usage row is
+    // indistinguishable from one that does not exist.
+    const existing = await db.tokenUsage.findFirst({ where: { id, companyId: scope.companyId } });
     if (!existing) {
       return NextResponse.json({ error: 'Token usage record not found' }, { status: 404 });
     }
@@ -214,6 +219,12 @@ export async function PUT(request: NextRequest) {
       },
     });
   } catch (error) {
+    if (error instanceof Error && error.message === 'Unauthorized') {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (error instanceof Error && error.message === 'Forbidden') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
     console.error('PUT /api/token-usage error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }

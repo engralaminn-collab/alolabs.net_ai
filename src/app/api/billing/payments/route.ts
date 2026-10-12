@@ -1,19 +1,20 @@
+import { z } from 'zod';
+import { jsonResponse, secureRoute } from '@/lib/api/secure-route';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { requireAuth } from '@/lib/api-auth';
 
-export async function GET(request: NextRequest) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const companyId = searchParams.get('companyId');
-    const status = searchParams.get('status');
+/** Payments are authenticated and tenant-scoped; `companyId` from the query
+ *  string is no longer trusted. */
+const paymentListQuery = z.object({ status: z.string().max(40).optional() });
 
-    const where: Record<string, unknown> = {};
-    if (companyId) where.companyId = companyId;
-    if (status) where.status = status;
+export const GET = secureRoute(
+  { resource: 'billing.payments', action: 'read', query: paymentListQuery, rateLimit: { limit: 300, windowMs: 60_000 } },
+  async (context) => {
+    const { status } = context.query as z.infer<typeof paymentListQuery>;
 
     const payments = await db.payment.findMany({
-      where: Object.keys(where).length > 0 ? where : undefined,
+      where: context.tenantWhere(status ? { status } : {}),
       orderBy: { createdAt: 'desc' },
       include: {
         company: {
@@ -37,11 +38,9 @@ export async function GET(request: NextRequest) {
       createdAt: p.createdAt,
     }));
 
-    return NextResponse.json({ data });
-  } catch (error) {
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
-  }
-}
+    return jsonResponse({ data }, context.requestId);
+  },
+);
 
 export async function POST(request: NextRequest) {
   try {

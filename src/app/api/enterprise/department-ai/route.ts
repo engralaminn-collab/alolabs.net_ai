@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
-import { requireAuth } from '@/lib/api-auth'
+import { requireAuth, requireCompanyAuth } from '@/lib/api-auth'
 import { getOrchestrator } from '@/lib/orchestrator'
 
 // ─── Zod Schema ──────────────────────────────────────────────────────
@@ -243,7 +243,8 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const user = await requireAuth()
+    // Department runs are attributed to the caller's tenant.
+    const user = await requireCompanyAuth()
 
     const body = await request.json()
     const parsed = executeBodySchema.safeParse(body)
@@ -301,7 +302,7 @@ export async function POST(request: NextRequest) {
     const result = await orchestrator.execute({
       task,
       userId: user.userId,
-      companyId: 'default-company',
+      companyId: user.companyId,
       preferredAgentId: bestAgent.agentId,
     })
 
