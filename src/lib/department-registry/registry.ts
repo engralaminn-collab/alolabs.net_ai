@@ -30,7 +30,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['executive_decision_latency', 'strategic_initiative_completion', 'board_report_accuracy', 'cross_dept_alignment_score', 'exec_satisfaction_score'],
-    agentCount: 40,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_corporate_strategy',
@@ -51,7 +51,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['strategy_plan_accuracy', 'market_share_change', 'ma_deal_throughput', 'competitive_position_score'],
-    agentCount: 35,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_business_intelligence',
@@ -72,7 +72,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['dashboard_freshness', 'report_delivery_time', 'data_accuracy_score', 'insight_adoption_rate'],
-    agentCount: 30,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_decision_intelligence',
@@ -93,7 +93,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['decision_accuracy', 'scenario_coverage', 'decision_latency', 'model_confidence_score'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_risk_management',
@@ -114,7 +114,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['risk_identification_rate', 'mitigation_effectiveness', 'compliance_score', 'incident_response_time'],
-    agentCount: 30,
+    agentCount: 20,
   },
 
   // ═══════════════════════════════════════════════════════════════
@@ -139,7 +139,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['revenue_accuracy', 'expense_tracking_rate', 'financial_report_timeliness', 'budget_variance'],
-    agentCount: 35,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_accounting',
@@ -160,7 +160,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['invoice_processing_time', 'reconciliation_accuracy', 'payment_cycle_time', 'audit_readiness_score'],
-    agentCount: 30,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_financial_planning',
@@ -181,7 +181,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['forecast_accuracy', 'budget_adherence', 'planning_cycle_time', 'roi_on_investments'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_procurement',
@@ -223,7 +223,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['cash_position_accuracy', 'liquidity_ratio', 'fx_hedging_effectiveness', 'banking_cost_optimization'],
-    agentCount: 15,
+    agentCount: 20,
   },
 
   // ═══════════════════════════════════════════════════════════════
@@ -248,7 +248,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['employee_satisfaction', 'turnover_rate', 'time_to_hire', 'hr_request_resolution_time'],
-    agentCount: 30,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_recruitment',
@@ -269,7 +269,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['time_to_hire', 'cost_per_hire', 'offer_acceptance_rate', 'candidate_experience_score'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_employee_operations',
@@ -290,7 +290,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['onboarding_completion_rate', 'benefits_enrollment_time', 'hr_ticket_resolution', 'employee_record_accuracy'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_learning_and_development',
@@ -357,7 +357,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['revenue_target_achievement', 'deal_closure_rate', 'average_deal_size', 'sales_cycle_length'],
-    agentCount: 40,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_lead_generation',
@@ -378,7 +378,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['leads_generated', 'cost_per_lead', 'lead_source_quality', 'prospecting_conversion_rate'],
-    agentCount: 30,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_lead_qualification',
@@ -399,7 +399,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['qualification_accuracy', 'lead_to_opportunity_rate', 'qualification_speed', 'handoff_quality_score'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_business_development',
@@ -466,7 +466,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['marketing_roi', 'brand_awareness_lift', 'campaign_success_rate', 'lead_quality_from_marketing'],
-    agentCount: 35,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_growth_marketing',
@@ -487,7 +487,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['user_growth_rate', 'activation_rate', 'retention_rate', 'viral_coefficient', 'ltv_cac_ratio'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_digital_marketing',
@@ -508,7 +508,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['roas', 'cpa', 'click_through_rate', 'conversion_rate', 'ad_spend_efficiency'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_seo',
@@ -550,7 +550,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['content_engagement_rate', 'organic_leads_from_content', 'content_production_velocity', 'share_of_voice'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_social_media',
@@ -613,7 +613,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['brand_consistency_score', 'brand_awareness', 'brand_sentiment', 'asset_utilization_rate'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_pr_communications',
@@ -634,7 +634,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['media_mention_volume', 'press_pickup_rate', 'crisis_response_time', 'sentiment_score'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_market_research',
@@ -680,7 +680,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['student_leads_generated', 'enrollment_conversion_rate', 'cost_per_enrollment', 'student_source_quality'],
-    agentCount: 35,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_student_counseling',
@@ -701,7 +701,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['counseling_session_completion', 'student_satisfaction', 'program_match_accuracy', 'enrollment_after_counseling'],
-    agentCount: 30,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_university_partnerships',
@@ -743,7 +743,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['admission_processing_time', 'offer_acceptance_rate', 'enrollment_yield', 'admission_error_rate'],
-    agentCount: 30,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_application_processing',
@@ -764,7 +764,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['application_throughput', 'document_verification_accuracy', 'processing_turnaround', 'application_completion_rate'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_scholarship',
@@ -785,7 +785,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['scholarships_awarded', 'disbursement_accuracy', 'application_processing_time', 'fund_utilization_rate'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_visa_processing',
@@ -848,7 +848,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['document_completion_rate', 'attestation_accuracy', 'filing_speed', 'document_retrieval_time'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_student_support',
@@ -869,7 +869,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['support_resolution_rate', 'student_satisfaction', 'first_response_time', 'escalation_rate'],
-    agentCount: 25,
+    agentCount: 20,
   },
 
   // ═══════════════════════════════════════════════════════════════
@@ -894,7 +894,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['system_uptime', 'deployment_frequency', 'code_quality_score', 'technical_debt_ratio', 'architecture_compliance'],
-    agentCount: 40,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_software_development',
@@ -915,7 +915,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['feature_delivery_rate', 'bug_resolution_time', 'code_review_turnaround', 'pull_request_merge_rate'],
-    agentCount: 35,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_ai_engineering',
@@ -936,7 +936,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['model_accuracy', 'inference_latency', 'ai_feature_adoption', 'model_deployment_frequency'],
-    agentCount: 35,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_agent_engineering',
@@ -957,7 +957,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['agent_success_rate', 'task_completion_rate', 'agent_deployment_velocity', 'orchestration_efficiency'],
-    agentCount: 30,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_data_engineering',
@@ -978,7 +978,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['pipeline_reliability', 'data_freshness', 'etl_throughput', 'data_quality_score'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_devops',
@@ -999,7 +999,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['deployment_success_rate', 'mttr', 'build_time', 'infrastructure_cost_efficiency'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_cloud_infrastructure',
@@ -1041,7 +1041,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['vulnerability_remediation_time', 'security_incident_count', 'patch_coverage', 'security_score'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_qa_testing',
@@ -1062,7 +1062,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['test_coverage', 'defect_escape_rate', 'test_execution_time', 'automation_coverage'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_it_support',
@@ -1108,7 +1108,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['papers_published', 'research_breakthroughs', 'experiment_velocity', 'patent_applications'],
-    agentCount: 30,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_machine_learning',
@@ -1129,7 +1129,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['model_accuracy', 'training_efficiency', 'model_registry_size', 'benchmark_scores'],
-    agentCount: 30,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_data_science',
@@ -1150,7 +1150,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['prediction_accuracy', 'analysis_throughput', 'insight_adoption', 'data_quality_index'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_rag_knowledge',
@@ -1171,7 +1171,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['retrieval_accuracy', 'knowledge_coverage', 'rag_response_quality', 'index_freshness'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_ai_evaluation',
@@ -1255,7 +1255,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['compliance_score', 'audit_completion_rate', 'policy_coverage', 'governance_maturity_index'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_ai_analytics',
@@ -1276,7 +1276,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['anomaly_detection_accuracy', 'report_generation_speed', 'insight_relevance_score', 'prediction_horizon'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_ai_automation',
@@ -1297,7 +1297,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['automation_coverage', 'task_completion_rate', 'time_saved_percent', 'error_rate_reduction'],
-    agentCount: 25,
+    agentCount: 20,
   },
 
   // ═══════════════════════════════════════════════════════════════
@@ -1322,7 +1322,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['operational_efficiency', 'resource_utilization', 'process_adherence', 'cost_per_operation'],
-    agentCount: 35,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_workflow_automation',
@@ -1343,7 +1343,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['workflow_completion_rate', 'automation_coverage', 'processing_time_reduction', 'error_rate'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_process_optimization',
@@ -1385,7 +1385,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['onboarding_time', 'customer_activation_rate', 'account_health_score', 'churn_prevention_rate'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_vendor_management',
@@ -1406,7 +1406,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['vendor_performance_score', 'contract_compliance', 'cost_reduction', 'vendor_risk_index'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_logistics',
@@ -1427,7 +1427,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['delivery_accuracy', 'logistics_cost_per_unit', 'inventory_turnover', 'fulfillment_speed'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_quality_operations',
@@ -1448,7 +1448,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['defect_rate', 'quality_score', 'audit_pass_rate', 'capa_closure_time'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_internal_audit',
@@ -1469,7 +1469,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['audit_completion_rate', 'finding_resolution_time', 'control_effectiveness', 'audit_coverage'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_compliance',
@@ -1511,7 +1511,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['contract_review_time', 'legal_risk_index', 'ip_protection_score', 'dispute_resolution_rate'],
-    agentCount: 15,
+    agentCount: 20,
   },
 
   // ═══════════════════════════════════════════════════════════════
@@ -1536,7 +1536,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['first_response_time', 'resolution_rate', 'csat_score', 'ticket_backlog', 'escalation_rate'],
-    agentCount: 40,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_customer_success',
@@ -1557,7 +1557,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['net_retention_rate', 'customer_health_score', 'feature_adoption_rate', 'expansion_revenue', 'nps'],
-    agentCount: 30,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_crm_operations',
@@ -1599,7 +1599,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['message_delivery_rate', 'response_time', 'conversation_resolution', 'template_approval_rate'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_email_operations',
@@ -1641,7 +1641,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['average_handle_time', 'first_call_resolution', 'service_level', 'call_quality_score', 'abandon_rate'],
-    agentCount: 35,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_chat_operations',
@@ -1662,7 +1662,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['chat_response_time', 'resolution_rate', 'bot_deflection_rate', 'customer_satisfaction'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_complaint_resolution',
@@ -1704,7 +1704,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['nps_score', 'feedback_response_rate', 'sentiment_trend', 'actionable_insight_count'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_community_management',
@@ -1725,7 +1725,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['community_growth_rate', 'engagement_rate', 'moderation_response_time', 'advocate_count'],
-    agentCount: 15,
+    agentCount: 20,
   },
 
   // ═══════════════════════════════════════════════════════════════
@@ -1813,7 +1813,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['intl_revenue_growth', 'compliance_score', 'market_penetration', 'cross_border_deals'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_country_research',
@@ -1834,7 +1834,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['countries_analyzed', 'research_depth_score', 'regulatory_coverage', 'recommendation_accuracy'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_university_research',
@@ -1855,7 +1855,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['universities_evaluated', 'program_match_accuracy', 'partnership_pipeline', 'research_turnaround'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_industry_research',
@@ -1876,7 +1876,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['industries_covered', 'trend_prediction_accuracy', 'report_citation_count', 'insight_timeliness'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_trend_intelligence',
@@ -1897,7 +1897,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['trend_detection_speed', 'prediction_accuracy', 'signal_coverage', 'strategic_impact'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_opportunity_discovery',
@@ -1918,7 +1918,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['opportunities_discovered', 'validation_rate', 'time_to_discovery', 'opportunity_value'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_innovation',
@@ -1964,7 +1964,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['roadmap_execution', 'feature_adoption', 'user_satisfaction', 'time_to_market', 'stakeholder_alignment'],
-    agentCount: 30,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_ux_ui',
@@ -1985,7 +1985,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['design_system_adoption', 'usability_score', 'design_review_cycle_time', 'accessibility_score'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_platform_operations',
@@ -2006,7 +2006,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['platform_uptime', 'incident_response_time', 'mttr', 'error_budget_consumption', 'p99_latency'],
-    agentCount: 25,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_api_integrations',
@@ -2048,7 +2048,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['developer_community_size', 'sdk_adoption', 'github_stars', 'developer_nps', 'content_engagement'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_documentation',
@@ -2069,7 +2069,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['doc_coverage', 'doc_freshness', 'reader_satisfaction', 'search_success_rate'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_knowledge_management',
@@ -2090,7 +2090,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['knowledge_coverage', 'search_relevance', 'content_freshness', 'knowledge_reuse_rate'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_agent_marketplace',
@@ -2132,7 +2132,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['arpu', 'revenue_growth', 'pricing_optimization_score', 'billing_accuracy', 'churn_impact'],
-    agentCount: 15,
+    agentCount: 20,
   },
   {
     departmentId: 'dept_future_ventures',
@@ -2153,7 +2153,7 @@ const INITIAL_DEPARTMENTS: DepartmentConfig[] = [
     status: 'active',
     sla: { responseTimeMs: 30000, uptimePercent: 99.9 },
     kpis: ['ventures_launched', 'experiment_velocity', 'success_rate', 'strategic_alignment'],
-    agentCount: 15,
+    agentCount: 20,
   },
 ];
 
