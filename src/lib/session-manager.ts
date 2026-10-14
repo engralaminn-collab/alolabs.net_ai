@@ -16,13 +16,19 @@ import {
   legacySessionKey,
   candidateKeysForIndexEntry,
 } from '@/lib/session-token';
+import {
+  readSessionIndex,
+  addSessionToIndex,
+  removeSessionFromIndex,
+  removeSessionIndexEntry,
+  clearSessionIndex,
+} from '@/lib/session-index';
 
 // ─── Configuration ──────────────────────────────────────────────────
 
 const TOKEN_LENGTH = 48;
 const DEFAULT_TTL_MS = 60 * 60 * 1000; // 1 hour
 const REMEMBER_ME_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-const USER_SESSIONS_KEY_PREFIX = 'user:sessions:';
 
 // NOTE: `sessionKey` / `SESSION_KEY_PREFIX` are imported from
 // @/lib/session-token, NOT redefined here. This module and src/lib/auth.ts
@@ -77,10 +83,6 @@ function isExpired(session: SessionData): boolean {
   return new Date(session.expiresAt) < new Date();
 }
 
-function userSessionsKey(userId: string): string {
-  return `${USER_SESSIONS_KEY_PREFIX}${userId}`;
-}
-
 /**
  * Locate a session row by token, trying the hashed key first and then the
  * pre-hashing legacy key. Returns the key that actually matched so callers can
@@ -96,75 +98,11 @@ async function resolveSessionRow(
   return null;
 }
 
-async function addUserSessionToken(userId: string, token: string): Promise<void> {
-  const key = userSessionsKey(userId);
-  const existing = await db.settings.findUnique({ where: { key } });
-  let entries: string[] = [];
-  if (existing) {
-    try {
-      entries = JSON.parse(existing.value) as string[];
-    } catch {
-      entries = [];
-    }
-  }
-  // Index the DIGEST, never the raw token. This array is a second copy of every
-  // live credential, so storing plaintext here would undo the hashing of the
-  // session rows themselves — reading one Settings row would still yield a
-  // replayable token for each of the user's devices.
-  const entry = hashSessionToken(token);
-  if (!entries.includes(entry)) {
-    entries.push(entry);
-  }
-  await db.settings.upsert({
-    where: { key },
-    update: { value: JSON.stringify(entries), updatedAt: new Date() },
-    create: { key, value: JSON.stringify(entries), type: 'json' },
-  });
-}
-
-/**
- * Remove one entry from a user's session index by EXACT match.
- *
- * Callers that already hold a stored index entry (a digest, or a legacy
- * plaintext token read back out of a row key) must use this. Passing such a
- * value to `removeUserSessionToken` would hash it a second time and match
- * nothing, leaving the index permanently stale.
- */
-async function removeUserSessionEntry(userId: string, entry: string): Promise<void> {
-  await filterUserSessionIndex(userId, (t) => t !== entry);
-}
-
-async function removeUserSessionToken(userId: string, token: string): Promise<void> {
-  // Drop the digest, and any legacy plaintext entry for the same token, so an
-  // index written before hashing is cleaned up on first revoke.
-  const digest = hashSessionToken(token);
-  await filterUserSessionIndex(userId, (t) => t !== digest && t !== token);
-}
-
-async function filterUserSessionIndex(
-  userId: string,
-  keep: (entry: string) => boolean,
-): Promise<void> {
-  const key = userSessionsKey(userId);
-  const existing = await db.settings.findUnique({ where: { key } });
-  if (!existing) return;
-  let entries: string[] = [];
-  try {
-    entries = JSON.parse(existing.value) as string[];
-  } catch {
-    return;
-  }
-  const filtered = entries.filter(keep);
-  if (filtered.length === entries.length) return; // nothing to do
-  if (filtered.length === 0) {
-    await db.settings.delete({ where: { key } }).catch(() => {});
-  } else {
-    await db.settings.update({
-      where: { key },
-      data: { value: JSON.stringify(filtered), updatedAt: new Date() },
-    });
-  }
-}
+// The per-user session index now lives in @/lib/session-index so that
+// src/lib/auth.ts (which mints tokens on login) and this module (which lists
+// and revokes them) share ONE implementation. When it was private to this file,
+// auth.ts never populated it, so listActiveSessions() always returned [] and
+// revokeAllSessions() always revoked nothing.
 
 // ─── Public API ─────────────────────────────────────────────────────
 
@@ -196,7 +134,7 @@ export async function createSession(
     create: { key: sessionKey(token), value: JSON.stringify(sessionData), type: 'json' },
   });
 
-  await addUserSessionToken(userId, token);
+  await addSessionToIndex(userId, token);
 
   return token;
 }
@@ -265,7 +203,7 @@ export async function revokeSession(token: string): Promise<boolean> {
   }
 
   if (userId) {
-    await removeUserSessionToken(userId, token);
+    await removeSessionFromIndex(userId, token);
   }
 
   return true;
@@ -275,18 +213,7 @@ export async function revokeSession(token: string): Promise<boolean> {
  * Revoke all sessions for a user.
  */
 export async function revokeAllSessions(userId: string): Promise<number> {
-  const record = await db.settings.findUnique({
-    where: { key: userSessionsKey(userId) },
-  });
-  if (!record) return 0;
-
-  let tokens: string[] = [];
-  try {
-    tokens = JSON.parse(record.value) as string[];
-  } catch {
-    return 0;
-  }
-
+  const tokens = await readSessionIndex(userId);
   if (tokens.length === 0) return 0;
 
   // Delete all session records. Index entries are digests, not raw tokens, so
@@ -299,12 +226,44 @@ export async function revokeAllSessions(userId: string): Promise<number> {
     },
   });
 
-  // Delete the user sessions index
-  await db.settings
-    .delete({ where: { key: userSessionsKey(userId) } })
-    .catch(() => {});
+  await clearSessionIndex(userId);
 
   return tokens.length;
+}
+
+/**
+ * Revoke every session belonging to a user EXCEPT the one presented.
+ *
+ * This is what "sign out all other devices" must do. The route previously
+ * called `revokeAllSessions()`, which deleted the caller's own session too and
+ * — despite a comment claiming it would "re-create the current one" — returned
+ * without doing so, silently invalidating the token the client was still
+ * holding. The next request from that client would 401 with no explanation.
+ *
+ * Returns the number of other sessions revoked.
+ */
+export async function revokeOtherSessions(
+  userId: string,
+  currentToken: string,
+): Promise<number> {
+  const entries = await readSessionIndex(userId);
+  if (entries.length === 0) return 0;
+
+  // Index entries are digests; the caller presents a raw token. Compare against
+  // both forms so a legacy plaintext entry is also recognised as "current".
+  const currentDigest = hashSessionToken(currentToken);
+  const others = entries.filter((e) => e !== currentDigest && e !== currentToken);
+  if (others.length === 0) return 0;
+
+  await db.settings.deleteMany({
+    where: { key: { in: others.flatMap((e) => candidateKeysForIndexEntry(e)) } },
+  });
+
+  // Rebuild the index so it holds only the surviving session.
+  await clearSessionIndex(userId);
+  await addSessionToIndex(userId, currentToken).catch(() => {});
+
+  return others.length;
 }
 
 /**
@@ -314,17 +273,8 @@ export async function revokeAllSessions(userId: string): Promise<number> {
 export async function listActiveSessions(
   userId: string,
 ): Promise<SessionInfo[]> {
-  const record = await db.settings.findUnique({
-    where: { key: userSessionsKey(userId) },
-  });
-  if (!record) return [];
-
-  let tokens: string[] = [];
-  try {
-    tokens = JSON.parse(record.value) as string[];
-  } catch {
-    return [];
-  }
+  const tokens = await readSessionIndex(userId);
+  if (tokens.length === 0) return [];
 
   const results: SessionInfo[] = [];
 
@@ -380,7 +330,7 @@ export async function cleanupExpiredSessions(): Promise<number> {
         // The suffix after `session:` is the stored identifier — a digest for
         // current rows, a raw token for pre-hashing legacy rows. It is NOT a
         // raw token in general, so it must be removed from the per-user index
-        // by exact match (removeUserSessionEntry), never re-hashed.
+        // by exact match (removeSessionIndexEntry), never re-hashed.
         const entry = record.key.slice(SESSION_KEY_PREFIX.length);
         expiredKeys.push(record.key);
 
@@ -404,10 +354,10 @@ export async function cleanupExpiredSessions(): Promise<number> {
 
   // Update user session lists to remove expired entries. These are key
   // suffixes (digests or legacy plaintext), so remove by exact match rather
-  // than via removeUserSessionToken(), which would hash them a second time.
+  // than via removeSessionFromIndex(), which would hash them a second time.
   for (const [userId, entries] of expiredUserEntries) {
     for (const entry of entries) {
-      await removeUserSessionEntry(userId, entry);
+      await removeSessionIndexEntry(userId, entry);
     }
   }
 

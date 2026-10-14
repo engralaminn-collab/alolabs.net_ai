@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { db } from './db';
 import { sessionKey, legacySessionKey } from './session-token';
+import { addSessionToIndex, removeSessionFromIndex, clearSessionIndex } from './session-index';
 
 const SALT_ROUNDS = 12;
 const TOKEN_LENGTH = 48;
@@ -138,6 +139,14 @@ export async function createSessionToken(userId: string, options: SessionCreateO
     update: { value: JSON.stringify(record), updatedAt: now },
     create: { key: sessionKey(token), value: JSON.stringify(record), type: 'json' },
   });
+
+  // Register the session in the per-user index. Without this the index is only
+  // ever written by session-manager's own createSession(), which nothing on the
+  // login path calls — so GET /api/auth/sessions returned an empty "active
+  // devices" list and DELETE ?all=true revoked nothing while reporting success.
+  // Best-effort: a failure here must not fail the login itself.
+  await addSessionToIndex(userId, token).catch(() => {});
+
   return token;
 }
 
@@ -227,6 +236,10 @@ export async function revokeUserSessions(userId: string): Promise<number> {
       }
     } catch { /* skip malformed */ }
   }
+  // This path scans rows rather than trusting the index, so it works even when
+  // the index is stale — but the index must still be cleared, or
+  // listActiveSessions() would keep advertising sessions that are now gone.
+  if (revoked > 0) await clearSessionIndex(userId).catch(() => {});
   return revoked;
 }
 
@@ -246,6 +259,18 @@ export async function purgeExpiredSessions(now: Date = new Date()): Promise<numb
 }
 
 export async function deleteSessionToken(token: string): Promise<void> {
+  // Resolve the owning user BEFORE deleting, so the per-user index can be kept
+  // in sync. Otherwise revoked sessions linger in the index and
+  // listActiveSessions() keeps reporting devices that no longer exist.
+  let userId: string | undefined;
+  for (const key of [sessionKey(token), legacySessionKey(token)]) {
+    const row = await db.settings.findUnique({ where: { key } }).catch(() => null);
+    if (row) {
+      userId = parseSessionRecord(row.value)?.userId;
+      break;
+    }
+  }
+
   // Remove both the hashed row and any not-yet-migrated legacy row, so that a
   // revoke or logout cannot leave a usable plaintext session behind.
   for (const key of [sessionKey(token), legacySessionKey(token)]) {
@@ -255,4 +280,6 @@ export async function deleteSessionToken(token: string): Promise<void> {
       // Session may already be deleted
     }
   }
+
+  if (userId) await removeSessionFromIndex(userId, token).catch(() => {});
 }

@@ -72,7 +72,7 @@ vi.mock('@/lib/db', () => {
 });
 
 import { createSessionToken, verifySessionToken } from '@/lib/auth';
-import { verifySession, revokeSession, listActiveSessions } from '@/lib/session-manager';
+import { verifySession, revokeSession, revokeOtherSessions, listActiveSessions } from '@/lib/session-manager';
 
 const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex');
 
@@ -166,12 +166,63 @@ describe('shared session keyspace (auth.ts <-> session-manager.ts)', () => {
     expect(await verifySession(legacyToken)).toBeNull();
   });
 
-  it('reports no active sessions for login-minted tokens (known pre-existing gap)', async () => {
-    // DOCUMENTED GAP, asserted so it cannot silently change: auth.ts does not
-    // populate the `user:sessions:<userId>` index that listActiveSessions reads,
-    // so the account "active devices" list is always empty for real logins.
-    // Fixing it is a separate functional change, not part of this security fix.
+  it('lists a login-minted session, so "active devices" is populated', async () => {
+    // Was a documented gap: auth.ts never populated the `user:sessions:<userId>`
+    // index that listActiveSessions reads, so the account "active devices" list
+    // was always empty for real logins and DELETE ?all=true revoked nothing.
     await createSessionToken('user-6');
-    expect(await listActiveSessions('user-6')).toEqual([]);
+    const sessions = await listActiveSessions('user-6');
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].session.userId).toBe('user-6');
+  });
+
+  it('lists every device a user signs in from', async () => {
+    await createSessionToken('user-7');
+    await createSessionToken('user-7');
+    await createSessionToken('user-8');
+    expect(await listActiveSessions('user-7')).toHaveLength(2);
+    expect(await listActiveSessions('user-8')).toHaveLength(1);
+  });
+
+  it('never exposes a raw token in the session listing', async () => {
+    const token = await createSessionToken('user-9');
+    const sessions = await listActiveSessions('user-9');
+    expect(sessions[0].token).not.toContain(token);
+    expect(sessions[0].token).toMatch(/\.\.\.$/);
+  });
+
+  it('drops a session from the index once it is revoked', async () => {
+    const token = await createSessionToken('user-10');
+    expect(await listActiveSessions('user-10')).toHaveLength(1);
+    await revokeSession(token);
+    expect(await listActiveSessions('user-10')).toEqual([]);
+  });
+
+  it('"sign out all other devices" revokes others but keeps the caller signed in', async () => {
+    // The route previously called revokeAllSessions(), which deleted the
+    // caller's own session and never re-created it — the client kept holding a
+    // dead token and 401'd on its next request with no explanation.
+    const current = await createSessionToken('user-11');
+    const other1 = await createSessionToken('user-11');
+    const other2 = await createSessionToken('user-11');
+
+    const revoked = await revokeOtherSessions('user-11', current);
+    expect(revoked).toBe(2);
+
+    // The caller survives.
+    expect(await verifySessionToken(current)).not.toBeNull();
+    // The other devices are dead in both modules.
+    expect(await verifySessionToken(other1)).toBeNull();
+    expect(await verifySessionToken(other2)).toBeNull();
+    expect(await verifySession(other1)).toBeNull();
+
+    // And the index now reflects only the surviving session.
+    expect(await listActiveSessions('user-11')).toHaveLength(1);
+  });
+
+  it('reports 0 when there are no other devices to sign out', async () => {
+    const only = await createSessionToken('user-12');
+    expect(await revokeOtherSessions('user-12', only)).toBe(0);
+    expect(await verifySessionToken(only)).not.toBeNull();
   });
 });

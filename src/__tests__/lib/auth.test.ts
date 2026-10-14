@@ -109,9 +109,25 @@ describe('Auth Library', () => {
 
     it('should upsert a session record into db.settings', async () => {
       await createSessionToken('user-456');
-      expect(mockedDb.settings.upsert).toHaveBeenCalledTimes(1);
       const call = mockedDb.settings.upsert.mock.calls[0][0];
       expect(call?.where.key).toMatch(/^session:[a-f0-9]+$/);
+    });
+
+    it('should register the session in the per-user index', async () => {
+      // Without this write, GET /api/auth/sessions returns an empty "active
+      // devices" list and DELETE ?all=true revokes nothing while reporting
+      // success — the index is what listActiveSessions/revokeOtherSessions read.
+      const token = await createSessionToken('user-index');
+      const keys = mockedDb.settings.upsert.mock.calls.map((c) => c[0]?.where?.key);
+      expect(keys).toContain(`session:${sha256(token)}`);
+      expect(keys).toContain('user:sessions:user-index');
+
+      const indexCall = mockedDb.settings.upsert.mock.calls.find(
+        (c) => c[0]?.where?.key === 'user:sessions:user-index',
+      );
+      // The index stores the digest, never the raw token.
+      expect(indexCall?.[0].create.value).toBe(JSON.stringify([sha256(token)]));
+      expect(indexCall?.[0].create.value).not.toContain(token);
     });
 
     it('should store the userId in the session value', async () => {
