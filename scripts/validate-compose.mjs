@@ -21,8 +21,8 @@
  * Usage: node scripts/validate-compose.mjs
  * Exit:  0 when all invariants hold, 1 with a list of violations otherwise.
  */
-import { readFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { join, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -184,6 +184,70 @@ for (const [rel, patterns] of optionalSurfaces) {
   }
   if (/127\.0\.0\.1:3000|PORT=3000|PORT: 3000/.test(text)) {
     fail(`${rel}: still references port 3000 — the app listens on ${APP_PORT}`);
+  }
+}
+
+// ─── 4e. application source must not hardcode the wrong port ───────────────
+// Server-to-self HTTP calls used to fall back to http://localhost:3000, a port
+// nothing in this repository listens on, so every worker-driven chat, email,
+// notification, backup and upload call would fail with ECONNREFUSED in any
+// deployment that did not happen to set NEXT_PUBLIC_APP_URL. Those call sites
+// now go through src/lib/internal-url.ts. This guard keeps them there.
+//
+// Only src/ is scanned: the compose files legitimately contain 3000 for
+// Grafana's *container* port (published as 3001), and .env.example is asserted
+// separately below. Comment lines are skipped so explanatory prose that quotes
+// the old broken value does not trip the gate, and tests are excluded because
+// they must be able to name the stale value in order to assert it is rejected.
+function* walk(dir) {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    if (statSync(full).isDirectory()) yield* walk(full);
+    else yield full;
+  }
+}
+
+const isTestFile = (p) => /[./__](test|spec)\.(ts|tsx)$/.test(p) || p.includes(`${sep}__tests__${sep}`);
+
+const srcDir = join(root, 'src');
+if (existsSync(srcDir)) {
+  for (const file of walk(srcDir)) {
+    if (!/\.(ts|tsx)$/.test(file)) continue;
+    const rel = relative(root, file);
+    if (isTestFile(file)) continue;
+    let inBlockComment = false;
+    const lines = readFileSync(file, 'utf8').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      // Track /* ... */ so quoted prose is not treated as code.
+      if (inBlockComment) {
+        if (line.includes('*/')) inBlockComment = false;
+        continue;
+      }
+      if (line.trimStart().startsWith('/*')) {
+        if (!line.includes('*/')) inBlockComment = true;
+        continue;
+      }
+      const trimmed = line.trimStart();
+      if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+      if (/localhost:3000|127\.0\.0\.1:3000/.test(line)) {
+        fail(`${rel}:${i + 1}: hardcoded port 3000 — the app listens on ${APP_PORT}; use internalBaseUrl()/publicBaseUrl() from src/lib/internal-url.ts`);
+      }
+    }
+  }
+}
+
+// .env.example is copied to .env by operators; APP_PORT there overrides the
+// compose default ${APP_PORT:-3011}, so a stale 3000 silently republishes the
+// app on the wrong host port while Caddy still proxies to 3011.
+if (existsSync(join(root, '.env.example'))) {
+  const envExample = read('.env.example');
+  const appPortLine = envExample.match(/^APP_PORT=(\S*)/m);
+  if (appPortLine && appPortLine[1] !== APP_PORT) {
+    fail(`.env.example: APP_PORT=${appPortLine[1]} but the app listens on ${APP_PORT}`);
+  }
+  if (/localhost:3000/.test(envExample)) {
+    fail(`.env.example: still references localhost:3000 — the app listens on ${APP_PORT}`);
   }
 }
 

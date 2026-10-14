@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { requireAuth } from '@/lib/api-auth'
+import { publicBaseUrl } from '@/lib/internal-url'
 
 /** Multimodal chat message parts for vision-capable models */
 interface VlmTextPart {
@@ -59,8 +60,10 @@ export async function POST(request: NextRequest) {
       const ZAI = (await import('z-ai-web-dev-sdk')).default
       const zai = await ZAI.create()
 
-      // Build the full URL if it's a relative path
-      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+      // Build the full URL if it's a relative path.
+      // This MUST be the public origin, not the loopback one: the URL is handed
+      // to a third-party vision model as `image_url`, so their servers fetch it.
+      const baseUrl = publicBaseUrl()
       const fullUrl = fileUrl.startsWith('http') ? fileUrl : `${baseUrl}${fileUrl}`
 
       // Use the vision-capable chat completions API with multimodal content.
