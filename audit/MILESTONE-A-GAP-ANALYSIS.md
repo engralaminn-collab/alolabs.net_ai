@@ -218,17 +218,44 @@ Merchant-country suitability (Bangladesh), settlement currency, recurring-billin
 support and compliance posture **cannot be verified from this sandbox** and
 require the user's decision and account access.
 
-### G4 — No global auth enforcement; no `middleware.ts` — **MEDIUM-HIGH**
+### G4 — ~~No global auth enforcement~~ **RETRACTED — this finding was wrong**
 
-There is no `src/middleware.ts` (verified absent). Authorization is per-route.
-Of 366 API route files, 9 contain no auth reference:
+**Correction (2026-10-15).** The original version of this section claimed there
+was no middleware and that authorization was per-route, giving a "fail-open
+posture" where new routes are unauthenticated by default. **That is false**, and
+it is retracted here rather than quietly deleted because it was committed in
+`9f55f0c` and may already have informed a decision.
 
-`health`, `health/live`, `health/ping`, `health/ready`, `infra/ping`,
-`v1/health`, `marketplace/templates`, `enterprise/roadmap`, `auth/mfa/resend`.
+What is actually true:
 
-The first six are health endpoints and are appropriately public. The last three
-need a product decision. Note that a per-route model means **any newly added
-route is unauthenticated by default** — a fail-open posture.
+* Next.js 16 renamed the middleware convention. `PROXY_FILENAME = 'proxy'` in
+  `node_modules/next/dist/lib/constants.js`, so **`src/proxy.ts` IS the global
+  edge gate** — the equivalent of the `middleware.ts` I reported as absent. It
+  exports `proxy(request)` and a `config.matcher` covering every path except
+  static assets. My original check looked only for `middleware.ts` and concluded
+  wrongly from its absence.
+* The posture is fail-**CLOSED**, not fail-open. `src/proxy.ts:221` rejects with
+  401 any `/api/*` request whose path+method is not in the explicit
+  `PUBLIC_API_ROUTES` allowlist and which carries no `Bearer` token (or, for
+  `/api/v1/*`, no `X-API-Key`). A newly added route therefore requires
+  credentials *by default* and is only public if someone deliberately adds it to
+  the allowlist. That is the safe direction, and the opposite of what I wrote.
+* The edge also sets `X-Request-Id`, `X-Content-Type-Options`, `X-Frame-Options`,
+  `HSTS`, `Referrer-Policy` and `Permissions-Policy` on every matched response,
+  issues and validates CSRF tokens for non-API mutating page requests, and
+  applies per-IP rate limits.
+
+The 9 routes with no in-file auth reference remain correctly public — 6 health
+probes plus `marketplace/templates`, `enterprise/roadmap` and `auth/mfa/resend`
+(see G5). Per-route `requireAuth()` still performs the *authoritative* DB session
+and tenant check; the edge only verifies that credentials are present, which is
+the right split of responsibility for an edge runtime that cannot reach Prisma.
+
+**Remaining real concern, restated accurately:** the edge gate checks only
+credential *presence*. Any route that forgets its own `requireAuth()` call is
+reachable by anyone who sends an arbitrary `Authorization: Bearer x` header.
+That is a much narrower risk than "unauthenticated by default", but it is real,
+and it is the reason G10 (a lint/CI guard) is proposed below.
 
 ### G5 — `auth/mfa/resend` is a no-op stub that reports success — **MEDIUM**
 
@@ -239,19 +266,40 @@ this is arguably correct behaviour, but returning `success: true` from an
 endpoint named `resend` is misleading to clients and should either be removed or
 renamed.
 
-### G6 — Duplicated, divergent implementations — **MEDIUM**
+### G6 — Duplicated, divergent implementations — **MEDIUM** (partly corrected)
 
-Verified by line count and importer count, not assumed:
+**Correction.** The original table listed "Rate limiting: `src/lib/rate-limiter.ts`
+and `src/lib/security/rate-limiter.ts`" as a duplicate pair. That was inferred
+from filename similarity and is **wrong as stated** — they are different
+implementations serving different purposes, with different storage backends and
+incompatible result types:
+
+| | `src/lib/rate-limiter.ts` | `src/lib/security/rate-limiter.ts` |
+|---|---|---|
+| Lines | 108 | 335 |
+| Backend | Prisma `RateLimitRecord` table | Redis with in-memory fallback |
+| `RateLimitResult.resetAt` | `Date` | `number` (epoch ms) |
+| Concern | generic sliding-window throughput | per-endpoint limits **plus account lockout** (`trackAttempt`, `getLockoutStatus`, `resetAttempts`) |
+| Importers | 1 (`lib/api/secure-route.ts`) | 2 (`/api/ai/chat`, `/api/enterprise/agents/run`) |
+
+Merging them would be a mistake. The real problem is not that these two are
+duplicates — it is that there are **five** independent limiters and the most
+complete one is unwired. See G11.
+
+The rest of this finding stands, verified by line count and importer count:
 
 | Concern | Files | Importers |
 |---|---|---|
 | Session management | `src/lib/session-manager.ts` (384 lines) **and** `src/lib/security/session-manager.ts` (374 lines) — `diff` confirms they **differ** | 3 and 1 respectively |
-| Rate limiting | `src/lib/rate-limiter.ts` **and** `src/lib/security/rate-limiter.ts` | — |
 | Auth | `api-auth` (184 importers), `auth` (117), `route-auth` (2), `v1-auth` (2) | two are near-dead |
 | Streaming chat | `/api/ai/stream` **and** `/api/llm/stream` | — |
 
 Two live session managers with different code is a real security-review hazard:
-a fix applied to one will not apply to the other.
+a fix applied to one will not apply to the other. **Partly addressed in
+`e26aabc`/`4afca3a`**: key derivation and the per-user index were extracted to
+`src/lib/session-token.ts` and `src/lib/session-index.ts`, so the two managers
+can no longer disagree about where a session lives. The two modules themselves
+are still separate and should still be consolidated.
 
 ### G7 — SSRF guard exists but is not wired to tools — **LOW (currently theoretical)**
 
@@ -273,6 +321,99 @@ with `ECONNREFUSED` in any deployment that did not set `NEXT_PUBLIC_APP_URL`.
 Fixed in commit `ec3944d` — see §5.
 
 ---
+
+### G9 — Client IP is spoofable, bypassing every IP-based control — **HIGH**
+
+`src/proxy.ts:getClientIp()` returns the **leftmost** `X-Forwarded-For` value:
+
+```ts
+const forwarded = request.headers.get('x-forwarded-for');
+if (forwarded) return forwarded.split(',')[0]!.trim();
+return 'unknown';
+```
+
+The leftmost entry is the one the **client** supplied; each trusted proxy
+*appends* to the right. Behind this stack (Cloudflare Tunnel → Caddy → Nginx →
+app) an attacker can therefore send `X-Forwarded-For: <random>` and obtain a
+fresh identity on every request. Consequences, all verified by reading the call
+sites that consume this value:
+
+* **Every IP rate limit is bypassable** — login (10/min), `/api/ai/chat`
+  (60/min), `/api/enterprise/agents/run` (30/min), general public API (100/min).
+  Rotating the header yields unlimited buckets.
+* **Brute-force lockout is bypassable** — `checkBruteForce(ip)` is keyed on this
+  value. (It is also independently broken; see G11.)
+* **Audit log integrity is compromised** — `clientIp` is persisted as
+  `AuditLog.ipAddress` for `user.login` and other events, so the recorded
+  source address is attacker-chosen. This undermines the forensic value of the
+  entire audit trail.
+* **Unbounded memory growth** — each distinct spoofed IP creates a new entry in
+  the module-scope `rateLimiter` and `authAttempts` Maps. They are only pruned
+  by a lazy sweep, so sustained spoofing is a memory-exhaustion vector.
+
+The same leftmost-value pattern is repeated in `login/route.ts:49`,
+`mfa/verify/route.ts:112`, `register/route.ts:57` and `tenant-gateway/route.ts`.
+
+**Remediation** (needs your topology confirmation before I change it): use the
+rightmost-untrusted hop, or `CF-Connecting-IP` when the request demonstrably
+came through Cloudflare, and configure the number of trusted proxy hops. Getting
+this wrong in the other direction would let a shared NAT/corporate egress IP
+collapse all users into one bucket and lock them out collectively, so this
+should not be guessed at.
+
+### G10 — Edge gate verifies credential *presence*, not validity — **MEDIUM**
+
+`src/proxy.ts:221` is correctly fail-closed, but it only checks that an
+`Authorization: Bearer …` header exists and is non-empty. The authoritative DB
+session and tenant check happens later, per route, in `requireAuth()` from
+`@/lib/api-auth`. That split is legitimate — an edge runtime cannot reach
+Prisma — but it means **any route that omits its own `requireAuth()` call is
+reachable with a garbage bearer token**. Recommended guard: a CI check that
+every `src/app/api/**/route.ts` outside the `PUBLIC_API_ROUTES` allowlist
+references an auth helper, so a forgotten check fails the build instead of
+silently exposing an endpoint.
+
+### G11 — Five independent rate limiters; the lockout machinery is inert — **MEDIUM-HIGH**
+
+Verified by reading each implementation, not by counting filenames:
+
+| # | Location | Backend | Status |
+|---|---|---|---|
+| 1 | `src/proxy.ts` `checkRateLimit` + `checkBruteForce` | module-scope `Map` | live (edge) |
+| 2 | `src/lib/rate-limiter.ts` | Prisma `RateLimitRecord` | live, 1 importer |
+| 3 | `src/lib/security/rate-limiter.ts` | Redis + memory fallback | partly live; **lockout functions have 0 callers** |
+| 4 | `src/app/api/auth/login/route.ts` | module-scope `Map` + `setInterval` | live |
+| 5 | `src/app/api/auth/mfa/verify/route.ts` | module-scope `Map` + `setInterval` | live |
+
+Plus two unrelated same-named helpers (`api/tenant-gateway/route.ts:315`,
+`lib/api-gateway.ts:148`) that limit by API-key rather than IP.
+
+Two concrete defects inside this sprawl:
+
+* **`recordFailedAttempt()` has zero call sites.** The only match in `src/` is
+  its own definition at `src/proxy.ts:125`. Nothing ever records a failed login,
+  so `checkBruteForce` can never accumulate attempts and the 15-minute lockout
+  can never engage.
+* **`checkBruteForce()` resets its own counter on every call.** Its first branch
+  is `if (!entry || now > entry.lockedUntil)`, and `lockedUntil` is initialised
+  to `0`, so `now > 0` is always true — the counter is zeroed and `allowed: true`
+  returned on every request. Even if `recordFailedAttempt` were wired up, the
+  lockout still could not trigger.
+
+So the brute-force protection is **doubly non-functional**. `login/route.ts`'s
+own limiter (#4) does work and is the only effective credential-stuffing control
+today, but it is per-process in-memory: it resets on every deploy and restart,
+and PM2 runs `instances: 1, exec_mode: 'fork'`, so there is currently no
+multi-worker split — but any move to cluster mode or a second container would
+silently multiply the effective limit by the instance count.
+
+Meanwhile `src/lib/security/rate-limiter.ts` already contains a correct,
+Redis-backed, per-endpoint implementation *with* lockout, and already declares
+the intended policy — `/api/auth/login` at 5 req/60 s with a 5-attempt,
+15-minute lockout. **The fix is to wire up what already exists rather than write
+anything new**: call `checkEndpointLimit` + `trackAttempt` on failure +
+`resetAttempts` on success from the login and MFA routes, then delete limiters
+#1, #4 and #5.
 
 ## 5. Work performed in this engagement
 
@@ -338,23 +479,37 @@ public-intent and were already correct.
 
 ## 7. Recommended milestone order
 
-Milestone B and most of C are already built and tested, so the highest-value
-remaining work is D and the two HIGH gaps that block it.
+Revised after the G4 retraction and the G9/G11 findings. Milestone B and most of
+C are already built and tested; the highest-value remaining work is now the
+access-control gaps, then Milestone D.
 
-1. **G2 — introduce SQLite migration history** (prerequisite for everything else
-   that touches the schema; also unblocks the Milestone F migration test).
-2. **G1 — migrate monetary `Float` → integer minor units** (or `Decimal`), on top
+1. **G9 — fix client-IP derivation** (HIGH). It gates the integrity of every
+   IP-based rate limit, the brute-force lockout, and the audit log. Requires your
+   proxy topology first (decision 3 below); guessing wrong either leaves the
+   bypass open or collapses all users behind one NAT into a shared bucket.
+2. **G11 — wire up the existing Redis-backed lockout** and delete limiters
+   #1/#4/#5. `src/lib/security/rate-limiter.ts` already implements the intended
+   policy correctly; this is integration work, not new design. Best done
+   immediately after G9, since a lockout keyed on a spoofable IP is not a lockout.
+3. **G2 — introduce SQLite migration history.** Prerequisite for any schema
+   change, and it unblocks the Milestone F migration test.
+4. **G1 — migrate monetary `Float` → integer minor units** (or `Decimal`), on top
    of G2, with a data migration and a rollback script matching the existing
    `mysql/*_rollback.sql` convention.
-3. **Milestone D — usage ledger + entitlements + gateway.** Needs a user decision
-   on gateway (see below) before any code.
-4. **G6 — collapse the duplicate session managers and rate limiters** to one
-   implementation each. Security-relevant and low-risk.
-5. **G4/G5 — add `middleware.ts` for fail-closed auth**, and resolve
-   `auth/mfa/resend`.
-6. **Milestone B verification** — once credentials exist, prove one hosted
-   provider end-to-end (non-streaming + streaming) and the Ollama adapter
-   against the local service.
+5. **Milestone D — usage ledger + entitlements + gateway.** Blocked on decisions
+   1 and 2 below.
+6. **G10 — CI guard asserting every non-allowlisted API route references an auth
+   helper.** Cheap, and it converts "someone forgot `requireAuth()`" from a
+   silent exposure into a build failure.
+7. **G6 — consolidate the two session managers** into one. Key derivation and the
+   per-user index are already shared (`e26aabc`, `4afca3a`), so what remains is
+   merging the two modules. **Do not merge the two rate limiters** — that part of
+   the original finding was wrong; they have different backends and purposes.
+8. **G5 — resolve `auth/mfa/resend`**, which is an unauthenticated no-op that
+   returns `success: true`.
+9. **Milestone B live verification** — once credentials and egress exist, prove
+   one hosted provider end-to-end (non-streaming + streaming) and the Ollama
+   adapter against the local service.
 
 ## 8. Decisions required from the user
 
@@ -364,7 +519,21 @@ remaining work is D and the two HIGH gaps that block it.
    — I cannot verify them from here.)
 2. **Money representation.** Integer minor units (poisha/cents, recommended —
    exact, no dependency) or Prisma `Decimal`?
-3. **Is a staging server path available** that I could be given access to, or
+3. **Proxy topology for G9.** How many trusted hops sit in front of the app, and
+   is `CF-Connecting-IP` authoritative? I need this to derive the client IP
+   correctly rather than guess.
+4. **Is a staging server path available** that I could be given access to, or
    will all deployment remain yours to execute?
-4. **CI billing.** Actions is blocked account-wide; until Settings → Billing is
+5. **CI billing.** Actions is blocked account-wide; until Settings → Billing is
    fixed, no gate can be verified by CI. All verification above is local.
+
+## 9. Self-corrections recorded in this document
+
+Listed explicitly so a reader of the committed history is not misled:
+
+| Original claim | Status | Correction |
+|---|---|---|
+| G4: "no `middleware.ts`, auth is per-route, fail-open posture" | **Retracted** | Next 16 renamed the convention; `src/proxy.ts` is the global edge gate and is fail-**closed** |
+| G6: "rate limiting is a duplicated pair" | **Corrected** | Different backends (Prisma vs Redis) and purposes; merging them would be wrong. The real issue is five limiters (G11) |
+| G6: "two divergent session managers" | **Stands, partly fixed** | Key derivation and index now shared via `session-token.ts` / `session-index.ts` |
+| §2.1 caveat on the 1054/1054 test run | **Stands** | Achieved via a sandbox-only shim + WASM engine; not the production code path |
