@@ -2,6 +2,7 @@ import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { db } from './db';
+import { sessionKey, legacySessionKey } from './session-token';
 
 const SALT_ROUNDS = 12;
 const TOKEN_LENGTH = 48;
@@ -9,9 +10,21 @@ const JWT_EXPIRES_IN = '24h';
 
 /**
  * Session lifetime. Sessions are opaque random tokens persisted in the
- * Settings table (`session:<token>`), with explicit `expiresAt` and an idle
- * timeout, so a leaked token cannot be used forever and a restart never
+ * Settings table (`session:<sha256(token)>`), with explicit `expiresAt` and an
+ * idle timeout, so a leaked token cannot be used forever and a restart never
  * resurrects a revoked session.
+ *
+ * TOKENS ARE HASHED AT REST. The bearer token is only ever returned to the
+ * client; the database stores its SHA-256 digest as the lookup key. A read of
+ * the Settings table — via SQL injection, a stolen backup, or an over-broad
+ * admin export — therefore yields digests that cannot be replayed. Hashing
+ * (not bcrypt) is correct here: the token is already 48 bytes of CSPRNG output,
+ * so there is no low-entropy secret for an attacker to brute-force, and a fast
+ * digest keeps every request from paying a key-derivation cost.
+ *
+ * Rows written before this change are keyed by the raw token. They are still
+ * honoured on read and lazily re-keyed on first successful use, so deploying
+ * this does not sign anyone out. See `legacySessionKey`.
  */
 const SESSION_TTL_HOURS = Number(process.env.SESSION_TTL_HOURS ?? 24);
 const SESSION_IDLE_HOURS = Number(process.env.SESSION_IDLE_HOURS ?? 12);
@@ -85,8 +98,28 @@ export interface SessionCreateOptions {
   ttlHours?: number;
 }
 
-function sessionKey(token: string): string {
-  return `session:${token}`;
+// Key derivation is shared with src/lib/session-manager.ts on purpose: both
+// modules read and write the same `session:` keyspace, and a private copy in
+// each is how logout silently broke when hashing was added here alone.
+// See src/lib/session-token.ts.
+
+/**
+ * Re-key a legacy raw-token row to its hashed key. Best-effort: if the write
+ * fails the session still verifies, it simply migrates on a later request.
+ */
+async function migrateLegacySessionKey(token: string, value: string): Promise<void> {
+  const hashed = sessionKey(token);
+  const legacy = legacySessionKey(token);
+  try {
+    await db.settings.upsert({
+      where: { key: hashed },
+      update: { value, updatedAt: new Date() },
+      create: { key: hashed, value, type: 'json' },
+    });
+    await db.settings.delete({ where: { key: legacy } });
+  } catch {
+    // Leave the legacy row in place; a later request retries the migration.
+  }
 }
 
 export async function createSessionToken(userId: string, options: SessionCreateOptions = {}): Promise<string> {
@@ -145,8 +178,26 @@ export function isSessionExpired(record: SessionRecord, now: Date = new Date()):
  */
 export async function verifySessionToken(token: string): Promise<{ userId: string; session: SessionRecord } | null> {
   if (!token || typeof token !== 'string' || token.length > 512) return null;
-  const session = await db.settings.findUnique({ where: { key: sessionKey(token) } });
-  if (!session) return null;
+
+  let session = await db.settings.findUnique({ where: { key: sessionKey(token) } });
+
+  // Fall back to the pre-hashing raw-token key, then migrate it in place so the
+  // plaintext row disappears on first successful use. Without this, deploying
+  // token hashing would invalidate every live session at once.
+  if (!session) {
+    const legacy = await db.settings.findUnique({ where: { key: legacySessionKey(token) } });
+    if (!legacy) return null;
+    const legacyRecord = parseSessionRecord(legacy.value);
+    // Only migrate a session that is still valid; expired ones are dropped below.
+    if (legacyRecord && !isSessionExpired(legacyRecord)) {
+      await migrateLegacySessionKey(token, legacy.value);
+      session = await db.settings.findUnique({ where: { key: sessionKey(token) } });
+      if (!session) return null;
+    } else {
+      session = legacy;
+    }
+  }
+
   const record = parseSessionRecord(session.value);
   const now = new Date();
   if (!record || isSessionExpired(record, now)) {
@@ -195,11 +246,13 @@ export async function purgeExpiredSessions(now: Date = new Date()): Promise<numb
 }
 
 export async function deleteSessionToken(token: string): Promise<void> {
-  try {
-    await db.settings.delete({
-      where: { key: `session:${token}` },
-    });
-  } catch {
-    // Session may already be deleted
+  // Remove both the hashed row and any not-yet-migrated legacy row, so that a
+  // revoke or logout cannot leave a usable plaintext session behind.
+  for (const key of [sessionKey(token), legacySessionKey(token)]) {
+    try {
+      await db.settings.delete({ where: { key } });
+    } catch {
+      // Session may already be deleted
+    }
   }
 }
