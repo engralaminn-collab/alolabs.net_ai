@@ -165,6 +165,28 @@ if (!/^FROM node:20-slim AS runner/m.test(dockerfile)) {
   fail('Dockerfile: runner stage must be node:20-slim');
 }
 
+// ─── 4d. bare-metal deploy surfaces must honour the same port ──────────────
+// The container stack is not the only way this app is deployed. The systemd
+// unit and the nginx configs were drifting onto 3000 independently of compose:
+// Next.js standalone defaults to 3000 when PORT is unset, so the unit started
+// an app nobody could reach, because deploy/nginx/agentos.conf proxies 3011.
+const optionalSurfaces = [
+  ['deploy/systemd/alolabs-agent-hub.service', [/Environment=PORT=3011/]],
+  ['deploy/nginx/agentos.conf', [/server 127\.0\.0\.1:3011;/]],
+  ['nginx.conf.example', [/server 127\.0\.0\.1:3011;/]],
+  ['ecosystem.config.js', [/PORT: 3011/]],
+];
+for (const [rel, patterns] of optionalSurfaces) {
+  if (!existsSync(join(root, rel))) continue; // surface removed; nothing to assert
+  const text = read(rel);
+  for (const p of patterns) {
+    if (!p.test(text)) fail(`${rel}: must pin the app to port ${APP_PORT} (found no match for ${p})`);
+  }
+  if (/127\.0\.0\.1:3000|PORT=3000|PORT: 3000/.test(text)) {
+    fail(`${rel}: still references port 3000 — the app listens on ${APP_PORT}`);
+  }
+}
+
 // ─── 5. bind-mounted host paths exist ──────────────────────────────────────
 for (const [file, text] of [['docker-compose.yml', baseText], ['docker-compose.prod.yml', prodText]]) {
   for (const rel of bindMounts(text)) {
