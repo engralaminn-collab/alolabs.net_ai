@@ -11,6 +11,74 @@ could not run locally: dependency install, TypeScript check, and the production 
 
 ---
 
+## 0. Resolution status (updated after fixes landed)
+
+Every defect in §3 has been fixed, plus two more found during the fix pass.
+All fixes are verified by a new dependency-free CI gate,
+`scripts/validate-compose.mjs`, which reports **21 violations against the
+pre-fix configuration** and **0 against the fixed one**.
+
+| # | Defect | Status | Fix |
+|---|---|---|---|
+| 3.1 | prod references undefined `redis`/`qdrant`/`minio` | ✅ Fixed | All three now defined in `docker-compose.yml` with healthchecks, volumes and loopback-only ports |
+| 3.2 | prod entrypoint ran `bun server.js` | ✅ Fixed | Override removed; image `CMD ["node","server.js"]` used. Schema init documented as an explicit operator step |
+| 3.3 | port 3000 vs 3011 split | ✅ Fixed | 3011 everywhere; asserted by the validator |
+| 3.4 | Caddy proxied to `localhost:3000` | ✅ Fixed | All 5 upstreams now `{$APP_UPSTREAM:app:3011}`, set by compose |
+| 3.5 | Prometheus scraped `app:3000` | ✅ Fixed | Now `app:3011` |
+| 3.6 | two database paths, one volume | ✅ Fixed | Both configs use `file:/app/data/agenthub.db` on the `app_data` volume |
+| 3.7 | README described a non-existent topology | ✅ Fixed | Table rewritten to match the 9 real services |
+| **3.8** | **Dockerfile built on Alpine but `binaryTargets = "debian-openssl-3.0.x"`** | ✅ Fixed | **All three stages moved to `node:20-slim` (glibc). A musl-built image cannot load the glibc Prisma engine, and `bcrypt`/`better-sqlite3` are compiled per libc** |
+| **3.9** | **`bcrypt` missing from the runner image** | ✅ Fixed | **See below** |
+| 6 | two ESLint warnings | ✅ Fixed | Lint now reports 0 errors **and 0 warnings** |
+
+### 3.9 — the runner image could not authenticate anyone
+
+`next.config.ts` lists `bcrypt` in `serverExternalPackages`, so Next.js does
+not bundle it, and the runner stage never copied it — while two source files
+import it. Every login would have thrown `MODULE_NOT_FOUND`.
+
+Investigating this properly **overturned my own first fix**. I initially wrote
+a script to walk and copy the whole transitive tree; it pulled in **513
+packages** and filled the disk. Inspecting a real build showed why that was
+wrong: Next.js output file tracing *already* copies `bcrypt`,
+`better-sqlite3`, `mysql2`, `pg`, `sharp`, `@prisma/client`, the query engine
+binary, `bindings` and `file-uri-to-path` into `.next/standalone/node_modules`.
+`serverExternalPackages` prevents *bundling*, not *tracing* — my original
+diagnosis in §3.9 conflated the two.
+
+The actual gap is exactly one lazily-required subtree: `src/lib/db.ts` loads
+the Prisma driver adapter via `require()` inside the `PRISMA_SQLITE_ADAPTER`
+branch, which static tracing cannot see. The Dockerfile now copies that
+verified three-package closure and nothing else:
+
+```
+@prisma/adapter-better-sqlite3 -> better-sqlite3 (already traced),
+                                  @prisma/driver-adapter-utils
+@prisma/driver-adapter-utils   -> @prisma/debug
+@prisma/debug                  -> (none)
+```
+
+The 513-package script was deleted.
+
+### Re-verification after the fixes
+
+| Gate | Before | After |
+|---|---|---|
+| TypeScript | 0 errors | ✅ 0 errors |
+| ESLint | 0 errors, 2 warnings | ✅ **0 errors, 0 warnings** |
+| Tests | 984 passed / 27 env-failed | ✅ 984 passed / 27 env-failed (unchanged — nothing broken) |
+| `next build` | ✅ 315 pages | ✅ 315 pages |
+| CI standalone artifacts | 3/5 | ✅ **5/5** (`npm run build` now runs the `cp` steps) |
+| `validate-compose.mjs` | — | ✅ 0 violations (21 on the old config) |
+| Compose YAML parse + merge | ❌ | ✅ Both files parse; merged prod `app` verified valid |
+
+The Dockerfile also now builds with `npm run build` rather than bare
+`next build`, so `.next/standalone/.next/static` and `.next/standalone/public`
+exist — two of the five artifacts CI checks for were previously never produced
+inside the image.
+
+---
+
 ## 1. Verdict
 
 **The source code is healthy. The deployment configuration is not.**

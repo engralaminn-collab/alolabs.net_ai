@@ -1,0 +1,184 @@
+#!/usr/bin/env node
+/**
+ * ALO Labs AgentOS — compose / deploy configuration validator.
+ *
+ * CI runs `docker compose config` only when Docker is available, and that
+ * check cannot see cross-file agreements anyway. This script is dependency
+ * free (no YAML library — bun.lock cannot be regenerated without bun, and CI
+ * installs with --frozen-lockfile) and asserts the invariants that silently
+ * rotted before:
+ *
+ *   1. Every service referenced by docker-compose.prod.yml is defined in
+ *      docker-compose.yml. An override or `depends_on` for an undefined
+ *      service makes `docker compose up` abort outright.
+ *   2. Every `depends_on` target exists.
+ *   3. The app port contract (3011) agrees across Dockerfile, both compose
+ *      files, Caddyfile and deploy/prometheus.yml.
+ *   4. No stale `localhost:3000` upstream remains in Caddyfile — Caddy runs in
+ *      its own container, where localhost is Caddy itself.
+ *   5. Every bind-mounted host path exists in the repository.
+ *
+ * Usage: node scripts/validate-compose.mjs
+ * Exit:  0 when all invariants hold, 1 with a list of violations otherwise.
+ */
+import { readFileSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const APP_PORT = '3011';
+
+const read = (rel) => readFileSync(join(root, rel), 'utf8');
+const violations = [];
+const fail = (msg) => violations.push(msg);
+
+// ─── Minimal compose service extraction ────────────────────────────────────
+// Compose files here use two-space indentation, so top-level keys sit at
+// column 0 and service names at exactly two spaces. This is deliberately a
+// targeted scan rather than a YAML parser.
+function topLevelKeys(text) {
+  const keys = [];
+  for (const line of text.split('\n')) {
+    const m = /^([A-Za-z0-9_.-]+):/.exec(line);
+    if (m) keys.push(m[1]);
+  }
+  return keys;
+}
+
+function servicesOf(text) {
+  const lines = text.split('\n');
+  const start = lines.findIndex((l) => /^services:\s*$/.test(l));
+  if (start === -1) return [];
+  const names = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^[^\s#]/.test(line)) break; // next top-level key ends the block
+    const m = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (m) names.push(m[1]);
+  }
+  return names;
+}
+
+/** Service names referenced by depends_on, in both list and map form. */
+function dependsOnTargets(text) {
+  const lines = text.split('\n');
+  const targets = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^(\s+)depends_on:\s*$/.exec(lines[i]);
+    if (!m) continue;
+    const indent = m[1].length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j];
+      if (!line.trim() || /^\s*#/.test(line)) continue;
+      const cur = line.match(/^\s*/)[0].length;
+      if (cur <= indent) break;
+      const entry = /^\s*(?:-\s*)?([A-Za-z0-9_-]+):?\s*(?:#.*)?$/.exec(line);
+      // Only the first nesting level names a service; `condition:` is deeper.
+      if (entry && cur === indent + 2 && !/^(condition|restart|required)$/.test(entry[1])) {
+        targets.push(entry[1]);
+      }
+    }
+  }
+  return [...new Set(targets)];
+}
+
+/** Bind mounts of the form ./host/path:/container/path. */
+function bindMounts(text) {
+  const out = [];
+  const re = /["']?(\.\/[^\s"':]+):\/[^\s"']+/g;
+  let m;
+  while ((m = re.exec(text))) out.push(m[1]);
+  return [...new Set(out)];
+}
+
+const baseText = read('docker-compose.yml');
+const prodText = read('docker-compose.prod.yml');
+const dockerfile = read('Dockerfile');
+const caddyfile = read('Caddyfile');
+const promConfig = read('deploy/prometheus.yml');
+
+const baseServices = servicesOf(baseText);
+const prodServices = servicesOf(prodText);
+
+// ─── 1. prod may only override services the base defines ───────────────────
+for (const svc of prodServices) {
+  if (!baseServices.includes(svc)) {
+    fail(`docker-compose.prod.yml overrides "${svc}", which docker-compose.yml does not define`);
+  }
+}
+
+// ─── 2. every depends_on target exists ─────────────────────────────────────
+const known = new Set(baseServices);
+for (const [file, text] of [['docker-compose.yml', baseText], ['docker-compose.prod.yml', prodText]]) {
+  for (const target of dependsOnTargets(text)) {
+    if (!known.has(target)) fail(`${file}: depends_on references undefined service "${target}"`);
+  }
+}
+
+// ─── 3. port contract ──────────────────────────────────────────────────────
+if (!/ENV PORT=3011/.test(dockerfile)) fail('Dockerfile: missing "ENV PORT=3011"');
+if (!/EXPOSE 3011/.test(dockerfile)) fail('Dockerfile: missing "EXPOSE 3011"');
+if (!new RegExp(`PORT: "?${APP_PORT}"?`).test(baseText)) {
+  fail(`docker-compose.yml: app environment must set PORT: "${APP_PORT}"`);
+}
+if (!baseText.includes(`:3011"`)) fail(`docker-compose.yml: app must publish container port ${APP_PORT}`);
+if (!new RegExp(`(localhost|127\\.0\\.0\\.1):${APP_PORT}/api/health`).test(baseText)) {
+  fail(`docker-compose.yml: app healthcheck must probe 127.0.0.1:${APP_PORT}/api/health`);
+}
+if (!new RegExp(`targets: \\['app:${APP_PORT}'\\]`).test(promConfig)) {
+  fail(`deploy/prometheus.yml: app scrape target must be app:${APP_PORT}`);
+}
+if (!/\{\$APP_UPSTREAM:app:3011\}/.test(caddyfile)) {
+  fail('Caddyfile: reverse_proxy must use {$APP_UPSTREAM:app:3011}');
+}
+
+// ─── 4. no stale localhost upstream in Caddyfile ───────────────────────────
+for (const m of caddyfile.matchAll(/reverse_proxy\s+(localhost:\d+)/g)) {
+  if (!caddyfile.includes('reverse_proxy localhost:{query.XTransformPort}')) continue;
+  // The :81 dev block intentionally proxies to a caller-supplied port; any
+  // other literal localhost upstream is the bug this validator exists for.
+  if (!m[1].includes('{query.XTransformPort}')) {
+    fail(`Caddyfile: "${m[1]}" is unreachable from the caddy container — use {$APP_UPSTREAM:app:3011}`);
+  }
+}
+
+// ─── 4b. the prod override must not reintroduce a custom entrypoint ─────────
+// It previously ran `bunx prisma db push && exec bun server.js`. The image is
+// node:20-slim with no bun, and `prisma` is a devDependency absent from the
+// runner stage, so that entrypoint could never start. The image's own
+// CMD ["node","server.js"] is correct and must be left alone.
+{
+  const prodApp = prodText.split(/^ {2}app:\s*$/m)[1]?.split(/^ {2}[A-Za-z0-9_-]+:\s*$/m)[0] ?? '';
+  if (/^\s{4}entrypoint:/m.test(prodApp)) {
+    fail('docker-compose.prod.yml: app must not override entrypoint — the image CMD ["node","server.js"] is correct');
+  }
+}
+
+// ─── 4c. runtime base image must be glibc ──────────────────────────────────
+// prisma/schema.prisma declares binaryTargets "debian-openssl-3.0.x", a
+// glibc/OpenSSL-3.0 binary that will not load on Alpine (musl). bcrypt and
+// better-sqlite3 are likewise built per libc.
+if (/^FROM node:\d+-alpine/m.test(dockerfile)) {
+  fail('Dockerfile: node:*-alpine (musl) cannot run the "debian-openssl-3.0.x" Prisma engine — use node:20-slim');
+}
+if (!/^FROM node:20-slim AS runner/m.test(dockerfile)) {
+  fail('Dockerfile: runner stage must be node:20-slim');
+}
+
+// ─── 5. bind-mounted host paths exist ──────────────────────────────────────
+for (const [file, text] of [['docker-compose.yml', baseText], ['docker-compose.prod.yml', prodText]]) {
+  for (const rel of bindMounts(text)) {
+    if (!existsSync(join(root, rel))) fail(`${file}: bind mount "${rel}" does not exist in the repository`);
+  }
+}
+
+// ─── report ────────────────────────────────────────────────────────────────
+console.log(`validate-compose: ${baseServices.length} base services [${baseServices.join(', ')}]`);
+console.log(`validate-compose: ${prodServices.length} prod overrides [${prodServices.join(', ')}]`);
+
+if (violations.length) {
+  console.error(`\nvalidate-compose: FAILED with ${violations.length} violation(s)\n`);
+  for (const v of violations) console.error(`  ✗ ${v}`);
+  process.exit(1);
+}
+console.log(`validate-compose: OK — port contract ${APP_PORT} consistent, no phantom services, all bind mounts present`);
