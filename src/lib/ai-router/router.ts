@@ -328,9 +328,9 @@ export class AIRouter {
       this.recordFailure(entry);
       this.handleCircuitBreaker(entry);
 
-      // Attempt failover on circuit-open, provider-unavailable, or retryable errors
-      const isRetryable = err instanceof AIRouterError && err.retryable;
-      if (err instanceof AICircuitOpenError || err instanceof AIProviderUnavailableError || isRetryable) {
+      // Attempt failover on circuit-open, provider-unavailable, retryable HTTP
+      // errors, and provider timeouts. See shouldAttemptFailover.
+      if (shouldAttemptFailover(err)) {
         const fallback = await this.attemptFailover(request, decision.provider, companyId, agentId);
         if (fallback) {
           this.emitDecision({
@@ -458,8 +458,11 @@ export class AIRouter {
       this.recordFailure(entry);
       this.handleCircuitBreaker(entry);
 
-      // Attempt failover streaming
-      if (err instanceof AICircuitOpenError || err instanceof AIProviderUnavailableError) {
+      // Attempt failover streaming. Uses the SAME predicate as the
+      // non-streaming path: this previously tested only the two custom error
+      // classes, so a retryable 503 or a provider timeout failed the request
+      // outright even though a healthy provider was registered.
+      if (shouldAttemptFailover(err)) {
         const fallbackStream = this.attemptStreamFailover(request, decision.provider, companyId, agentId);
         if (fallbackStream) {
           yield* fallbackStream;
@@ -851,6 +854,43 @@ export class AIRouter {
 }
 
 // ─── Error classification helpers ───────────────────────────────────
+
+/**
+ * Decide whether a failed provider call should be re-attempted against a
+ * different provider.
+ *
+ * BOTH the non-streaming and streaming paths must use this one predicate. They
+ * previously diverged, and each was wrong in a different way:
+ *
+ *   - Streaming tested only `AICircuitOpenError || AIProviderUnavailableError`,
+ *     so it would not fail over on a retryable HTTP 503 that the non-streaming
+ *     path did handle.
+ *   - Neither path failed over on a timeout. `AbortSignal.timeout()` rejects
+ *     with a DOMException named 'TimeoutError', which is not an AIRouterError,
+ *     so `err instanceof AIRouterError && err.retryable` was false and the
+ *     request failed outright despite a healthy provider being registered.
+ *
+ * For a paid platform whose premise is provider-independent routing, a slow
+ * vendor becoming a hard user-facing error is precisely the failure the router
+ * exists to absorb.
+ *
+ * NOTE ON CANCELLATION: today every timeout originates from the provider's own
+ * `AbortSignal.timeout(timeoutMs)`, so failing over is always correct. If a
+ * caller-supplied AbortSignal is added to AIRequest, this predicate must
+ * distinguish a caller cancel (propagate, do not fail over) from a provider
+ * timeout (fail over) — otherwise cancelling a request would silently start a
+ * second one and bill the customer twice.
+ */
+function shouldAttemptFailover(err: unknown): boolean {
+  if (err instanceof AICircuitOpenError) return true;
+  if (err instanceof AIProviderUnavailableError) return true;
+  if (err instanceof AIRouterError) return err.retryable;
+  // Timeouts surface as DOMException and network faults as plain Error; both are
+  // already normalised by errorCodeOf, so reuse that rather than duplicating the
+  // detection here.
+  const code = errorCodeOf(err);
+  return code === 'TIMEOUT' || code === 'RETRYABLE_ERROR';
+}
 
 function errorCodeOf(err: unknown): string {
   if (err instanceof AICircuitOpenError) return 'CIRCUIT_OPEN';
