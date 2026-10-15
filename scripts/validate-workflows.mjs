@@ -54,6 +54,11 @@ const ALLOWED = {
   'jobs.*.timeout-minutes': ['github', 'needs', 'strategy', 'matrix', 'vars', 'inputs'],
   'jobs.*.env': ['github', 'needs', 'strategy', 'matrix', 'vars', 'secrets', 'inputs'],
   'jobs.*.strategy': ['github', 'needs', 'vars', 'inputs'],
+  'jobs.*.services': ['github', 'needs', 'strategy', 'matrix', 'vars', 'inputs'],
+  'jobs.*.services.env': ['github', 'needs', 'strategy', 'matrix', 'job', 'runner', 'env', 'vars', 'secrets', 'inputs'],
+  'jobs.*.services.credentials': ['github', 'needs', 'strategy', 'matrix', 'env', 'vars', 'secrets', 'inputs'],
+  'jobs.*.container': ['github', 'needs', 'strategy', 'matrix', 'vars', 'inputs'],
+  'jobs.*.container.env': ['github', 'needs', 'strategy', 'matrix', 'job', 'runner', 'env', 'vars', 'secrets', 'inputs'],
   'jobs.*.outputs': ['github', 'needs', 'strategy', 'matrix', 'job', 'runner', 'env', 'vars', 'secrets', 'steps', 'inputs'],
   'jobs.*.steps.if': ['github', 'needs', 'strategy', 'matrix', 'job', 'runner', 'env', 'vars', 'steps', 'inputs'],
   'jobs.*.steps.env': ['github', 'needs', 'strategy', 'matrix', 'job', 'runner', 'env', 'vars', 'secrets', 'steps', 'inputs'],
@@ -138,6 +143,18 @@ for (const file of files) {
     checkContexts(problems, 'jobs.*.runs-on', job?.['runs-on'], `${at}.runs-on`);
     for (const [k, v] of Object.entries(job?.env ?? {})) checkContexts(problems, 'jobs.*.env', v, `${at}.env.${k}`);
     for (const [k, v] of Object.entries(job?.strategy ?? {})) checkContexts(problems, 'jobs.*.strategy', v, `${at}.strategy.${k}`);
+
+    // Service containers: `options` sits under jobs.*.services (no `env`
+    // context) while `env`/`credentials` sit under keys that do allow it.
+    for (const [svc, def] of Object.entries(job?.services ?? {})) {
+      const sat = `${at}.services.${svc}`;
+      checkContexts(problems, 'jobs.*.services', def?.image, `${sat}.image`);
+      checkContexts(problems, 'jobs.*.services', def?.options, `${sat}.options`);
+      for (const [k, v] of Object.entries(def?.env ?? {})) checkContexts(problems, 'jobs.*.services.env', v, `${sat}.env.${k}`);
+      for (const [k, v] of Object.entries(def?.credentials ?? {})) checkContexts(problems, 'jobs.*.services.credentials', v, `${sat}.credentials.${k}`);
+    }
+    for (const [k, v] of Object.entries(job?.container?.env ?? {})) checkContexts(problems, 'jobs.*.container.env', v, `${at}.container.env.${k}`);
+    checkContexts(problems, 'jobs.*.container', job?.container?.image, `${at}.container.image`);
     for (const [k, v] of Object.entries(job?.outputs ?? {})) checkContexts(problems, 'jobs.*.outputs', v, `${at}.outputs.${k}`);
 
     for (const [i, step] of (job?.steps ?? []).entries()) {
