@@ -10,6 +10,11 @@ on:
         required: true
         default: false
         type: boolean
+      run_paid_services:
+        description: 'Allow the SSH deploy to the production host to run (default: skipped)'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: production
@@ -25,18 +30,52 @@ env:
   CSRF_SECRET: 'ci-only-not-production'
   JWT_SECRET: 'ci-only-not-production'
   API_GATEWAY_SECRET: 'ci-only-not-production'
+  # Default deny: the production deploy is a billed, externally-visible action,
+  # so it needs an explicit opt-in rather than firing on every push to main.
+  # See scripts/ci-paid-services.sh for the resolution rules.
+  SKIP_PAID_SERVICES: 'true'
 
 jobs:
   quality-and-safety:
     name: CI quality and production safety hard-gates
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      skip_paid: ${{ steps.paid.outputs.skip_paid }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Resolve paid-services policy
+        id: paid
+        env:
+          CI_RUN_PAID_OVERRIDE: ${{ inputs.run_paid_services == true && 'true' || '' }}
+          SKIP_PAID_FROM_VARS: ${{ vars.SKIP_PAID_SERVICES }}
+          SKIP_PAID_FROM_SECRET: ${{ secrets.SKIP_PAID_SERVICES }}
+        run: |
+          set -euo pipefail
+          effective="${SKIP_PAID_FROM_VARS:-${SKIP_PAID_FROM_SECRET:-${SKIP_PAID_SERVICES:-true}}}"
+          skip="$(CI_RUN_PAID_OVERRIDE="${CI_RUN_PAID_OVERRIDE}" SKIP_PAID_SERVICES="${effective}" \
+            bash scripts/ci-paid-services.sh)"
+          echo "skip_paid=${skip}" >> "${GITHUB_OUTPUT}"
+          echo "SKIP_PAID_SERVICES=${skip}" >> "${GITHUB_ENV}"
+          {
+            echo '### Production deploy policy'
+            echo ''
+            echo "- \`SKIP_PAID_SERVICES\` = \`${skip}\`"
+            if [[ "${skip}" == 'true' ]]; then
+              echo '- The `deploy` job will be **skipped**. Quality gates still run.'
+              echo '- To deploy: set the repository Variable `SKIP_PAID_SERVICES=false`, or'
+              echo '  re-run via **Run workflow** with `run_paid_services` enabled.'
+            else
+              echo '- The `deploy` job is **enabled** and will SSH to the production host.'
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
+      - name: Validate workflow files
+        run: bun run lint:workflows
       - name: Production dependency advisory gate (blocks deployment)
         run: npm audit --omit=dev --audit-level=moderate
       - name: Generate CI Prisma client
@@ -68,6 +107,7 @@ jobs:
         run: bun run test
         env:
           NODE_ENV: test
+          SKIP_PAID_SERVICES: ${{ steps.paid.outputs.skip_paid }}
       - name: ESLint
         run: bun run lint
       - name: Build verification
@@ -92,7 +132,7 @@ jobs:
           install -m 700 deploy/scripts/deploy.sh production-safety-scripts/deploy.sh
           install -m 700 deploy/scripts/backup.sh production-safety-scripts/backup.sh
           install -m 700 deploy/scripts/database-safety-scan.sh production-safety-scripts/database-safety-scan.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: production-safety-scripts
           path: production-safety-scripts
@@ -103,7 +143,12 @@ jobs:
     name: Deploy production
     needs: quality-and-safety
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     environment: production
+    # Default deny, decided by the unit-tested scripts/ci-paid-services.sh via
+    # the gate job above — the expression is not duplicated here, so the shell
+    # and the workflow cannot disagree about when production gets touched.
+    if: needs.quality-and-safety.outputs.skip_paid == 'false'
     steps:
       - name: Validate required deployment secrets
         env:
@@ -116,12 +161,12 @@ jobs:
           test -n "${USERNAME}" || { echo 'PRODUCTION_USER is missing'; exit 1; }
           test -n "${SSH_KEY}" || { echo 'PRODUCTION_SSH_KEY is missing'; exit 1; }
           test -n "${SSH_PORT}" || { echo 'PRODUCTION_PORT is missing'; exit 1; }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: production-safety-scripts
           path: production-safety-scripts
       - name: Transfer reviewed safety scripts without changing production
-        uses: appleboy/scp-action@v1
+        uses: appleboy/scp-action@ff85246acaad7bdce478db94a363cd2bf7c90345 # v1
         with:
           host: ${{ secrets.PRODUCTION_HOST }}
           username: ${{ secrets.PRODUCTION_USER }}
@@ -132,7 +177,7 @@ jobs:
           strip_components: 1
           overwrite: true
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         env:
           MIGRATIONS_APPROVED: ${{ inputs.migrations_approved || 'false' }}
         with:

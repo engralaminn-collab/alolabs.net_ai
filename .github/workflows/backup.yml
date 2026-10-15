@@ -2,6 +2,12 @@ name: Verified production database backup
 
 on:
   workflow_dispatch:
+    inputs:
+      run_paid_services:
+        description: 'Allow the SSH backup on the production host to run (default: skipped)'
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: '0 2 * * *'
 
@@ -12,13 +18,61 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Default deny: a scheduled backup SSHes into the production host, so it must
+  # not start spending / touching production until it is explicitly enabled.
+  # Resolution rules live in scripts/ci-paid-services.sh (unit-tested).
+  SKIP_PAID_SERVICES: 'true'
+
 jobs:
-  backup:
+  # The gate lives in its own job because the `secrets` context is NOT available
+  # in `jobs.<job_id>.if` (allowed contexts there are github, needs, vars,
+  # inputs). Secrets ARE available in `steps.env`, so the flag is resolved here
+  # and handed to the backup job through a `needs` output.
+  # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#context-availability
+  resolve:
+    name: Resolve paid-services policy
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      skip_paid: ${{ steps.paid.outputs.skip_paid }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Resolve SKIP_PAID_SERVICES
+        id: paid
+        env:
+          CI_RUN_PAID_OVERRIDE: ${{ inputs.run_paid_services == true && 'true' || '' }}
+          SKIP_PAID_FROM_VARS: ${{ vars.SKIP_PAID_SERVICES }}
+          SKIP_PAID_FROM_SECRET: ${{ secrets.SKIP_PAID_SERVICES }}
+        run: |
+          set -euo pipefail
+          effective="${SKIP_PAID_FROM_VARS:-${SKIP_PAID_FROM_SECRET:-${SKIP_PAID_SERVICES:-true}}}"
+          skip="$(CI_RUN_PAID_OVERRIDE="${CI_RUN_PAID_OVERRIDE}" SKIP_PAID_SERVICES="${effective}" \
+            bash scripts/ci-paid-services.sh)"
+          echo "skip_paid=${skip}" >> "${GITHUB_OUTPUT}"
+          {
+            echo '### Production backup policy'
+            echo ''
+            echo "- \`SKIP_PAID_SERVICES\` = \`${skip}\`"
+            if [[ "${skip}" == 'true' ]]; then
+              echo '- The backup job will be **skipped**; production is not contacted.'
+              echo '- To run it: set the repository Variable `SKIP_PAID_SERVICES=false`, or'
+              echo '  use **Run workflow** with `run_paid_services` enabled.'
+            else
+              echo '- The backup job is **enabled** and will SSH to the production host.'
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  backup:
+    name: Run verified server-side backup
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: production
+    if: needs.resolve.outputs.skip_paid == 'false'
     steps:
       - name: Run verified server-side backup
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         with:
           host: ${{ secrets.PRODUCTION_HOST }}
           username: ${{ secrets.PRODUCTION_USER }}
