@@ -255,7 +255,8 @@ the right split of responsibility for an edge runtime that cannot reach Prisma.
 credential *presence*. Any route that forgets its own `requireAuth()` call is
 reachable by anyone who sends an arbitrary `Authorization: Bearer x` header.
 That is a much narrower risk than "unauthenticated by default", but it is real,
-and it is the reason G10 (a lint/CI guard) is proposed below.
+and it is the reason G10 (a lint/CI guard) exists — see below, now shipped on
+this branch as `scripts/validate-route-auth.mjs`.
 
 ### G5 — `auth/mfa/resend` is a no-op stub that reports success — **MEDIUM**
 
@@ -361,17 +362,32 @@ this wrong in the other direction would let a shared NAT/corporate egress IP
 collapse all users into one bucket and lock them out collectively, so this
 should not be guessed at.
 
-### G10 — Edge gate verifies credential *presence*, not validity — **MEDIUM**
+### G10 — Edge gate verifies credential *presence*, not validity — **MEDIUM → CLOSED on this branch**
 
 `src/proxy.ts:221` is correctly fail-closed, but it only checks that an
 `Authorization: Bearer …` header exists and is non-empty. The authoritative DB
 session and tenant check happens later, per route, in `requireAuth()` from
 `@/lib/api-auth`. That split is legitimate — an edge runtime cannot reach
 Prisma — but it means **any route that omits its own `requireAuth()` call is
-reachable with a garbage bearer token**. Recommended guard: a CI check that
-every `src/app/api/**/route.ts` outside the `PUBLIC_API_ROUTES` allowlist
-references an auth helper, so a forgotten check fails the build instead of
-silently exposing an endpoint.
+reachable with a garbage bearer token**. **Implemented guard (this branch):**
+`scripts/validate-route-auth.mjs`, wired into `.github/workflows/ci.yml` as the
+final CI step. It parses `PUBLIC_API_ROUTES` directly out of `src/proxy.ts`
+(failing loudly if it parses zero entries, so a refactor of that file cannot
+silently disable the check) and asserts that every `src/app/api/**/route.ts`
+handler outside the allowlist references a known auth helper
+(`requireAuth`/`secureRoute`/`v1Handler`/equivalent), so a forgotten check fails
+the build instead of silently exposing an endpoint. A second check reports routes
+made public *incidentally* by a `startsWith()` prefix match on a broader
+allowlist entry — which is why `/api/health/ping` is now listed explicitly in
+`proxy.ts` rather than inheriting publicity from `/api/health`. Two documented
+exceptions remain, each with a verified reason recorded in the script.
+
+Current result: `366 API route files, 570 non-public handler(s) checked, 16
+allowlist entries, 2 documented exception(s)` → exit 0. Proven bidirectionally:
+adding a throwaway handler with no auth check and no allowlist entry makes it
+exit 1 with a named violation; removing it returns exit 0. It is
+dependency-free, which is a hard requirement here — `bun.lock` cannot be
+regenerated in this environment and CI runs `bun install --frozen-lockfile`.
 
 ### G11 — Five independent rate limiters; the lockout machinery is inert — **MEDIUM-HIGH**
 
@@ -499,8 +515,9 @@ access-control gaps, then Milestone D.
 5. **Milestone D — usage ledger + entitlements + gateway.** Blocked on decisions
    1 and 2 below.
 6. **G10 — CI guard asserting every non-allowlisted API route references an auth
-   helper.** Cheap, and it converts "someone forgot `requireAuth()`" from a
-   silent exposure into a build failure.
+   helper.** **DONE on this branch** (`scripts/validate-route-auth.mjs`, final CI
+   step, exit 0 over 570 handlers). It converts "someone forgot `requireAuth()`"
+   from a silent exposure into a build failure.
 7. **G6 — consolidate the two session managers** into one. Key derivation and the
    per-user index are already shared (`e26aabc`, `4afca3a`), so what remains is
    merging the two modules. **Do not merge the two rate limiters** — that part of
@@ -537,3 +554,154 @@ Listed explicitly so a reader of the committed history is not misled:
 | G6: "rate limiting is a duplicated pair" | **Corrected** | Different backends (Prisma vs Redis) and purposes; merging them would be wrong. The real issue is five limiters (G11) |
 | G6: "two divergent session managers" | **Stands, partly fixed** | Key derivation and index now shared via `session-token.ts` / `session-index.ts` |
 | §2.1 caveat on the 1054/1054 test run | **Stands** | Achieved via a sandbox-only shim + WASM engine; not the production code path |
+
+---
+
+## 10. Deployment and CI security review (added after §1–§9)
+
+Scope: the seven workflows in `.github/workflows/`, the deploy scripts they call,
+and the live GitHub configuration read back over the REST API. Findings are
+numbered continuing the §4 series. Operator actions that only a repository admin
+can perform are collected in **`docs/DEPLOYMENT-RUNBOOK.md`** — the agent token
+gets `403 Resource not accessible by integration` on the environments, secrets and
+branch-protection endpoints, so those cannot be fixed from here.
+
+### G12 — Production deployment had no approval gate at all — **HIGH → FIXED**
+
+`deploy.yml` ran its `deploy` job on `on: push: branches: [main]`, and the live
+`production` environment returned:
+
+```
+"protection_rules": [], "deployment_branch_policy": null, "can_admins_bypass": true
+```
+
+So nothing separated a merge from an unattended production deploy. It is only
+inert today because Actions is billing-blocked and the four `PRODUCTION_*` secrets
+do not exist — i.e. **the first thing that happens when billing is fixed is that
+the next push to main deploys to production.** That directly contradicts the
+standing rule "deploy only after explicit approval and a tested rollback".
+
+The GitHub-native control is a required reviewer, but the official REST docs state
+that on Free/Pro/Team plans *"a wait timer or required reviewers … are only
+available for public repositories"*, and this repository is **private**. The fix
+implemented here is therefore plan-independent — the `deploy` job now carries:
+
+```yaml
+if: github.event_name == 'workflow_dispatch' && inputs.confirm_production_deploy == true
+```
+
+Pushes to `main` still run every quality and safety gate; only the deploy itself
+now needs an explicit human dispatch. Removing that line is documented in
+`deploy.yml` and in the runbook, conditional on confirming required reviewers
+actually pause the job.
+
+Side effect worth flagging: `backup.yml` targets the *same* `production`
+environment on a nightly schedule, so adding required reviewers would make
+nightly backups wait for approval. The runbook recommends a separate
+`production-backup` environment if unattended backups are wanted.
+
+### G13 — Workflow supply-chain and documentation drift — **MEDIUM-HIGH → FIXED**
+
+Three independent defects, each verified rather than assumed:
+
+| Defect | Evidence | Fix |
+|---|---|---|
+| **All 23 action references used mutable tags** (`actions/checkout@v4`, `appleboy/ssh-action@v1`, `gitleaks/gitleaks-action@v2`, …) across all 7 workflows | grep for `uses: .*@v[0-9]` | Every one pinned to a full-length commit SHA resolved via `gh api repos/<owner>/<repo>/commits/<tag>`, with the original tag kept as a trailing comment. A re-pointed tag is code execution inside a job that holds the production SSH key. |
+| **`ci.yml` had no `permissions:` block** | the other six workflows all set `contents: read`; `ci.yml` set none, so its `GITHUB_TOKEN` inherited the repository default | Top-level `permissions: contents: read` added |
+| **Documented secret names did not exist** | `docs/CI-CD-GUIDE.md` documented `DEPLOY_HOST`/`DEPLOY_USER`/`DEPLOY_SSH_KEY`; the workflows read `PRODUCTION_HOST`/`PRODUCTION_USER`/`PRODUCTION_SSH_KEY`/`PRODUCTION_PORT` | Guide corrected; `PRODUCTION_PORT` documented for the first time (it is mandatory — `deploy.yml` hard-fails without it) |
+
+Following the old guide would have created three secrets nothing reads while
+omitting one that is required, producing a deploy that fails its own validation
+step. To stop this class of drift returning, `scripts/validate-workflow-security.mjs`
+was added as a dependency-free CI gate covering: (A) action pinning, (B)
+least-privilege `permissions:`, (C) every secret referenced by a workflow must
+appear in `docs/CI-CD-GUIDE.md`, (D) no secret interpolated directly into a `run:`
+script. Current result: **7 workflows, 24/24 actions pinned, 5 secrets, exit 0.**
+
+All four checks were proven to fail loudly by mutating a copy of each workflow and
+confirming exit 1 with the expected message, then restoring and confirming exit 0.
+One of those probes caught a real bug in the guard itself — see §11.
+
+### G14 — World-writable staging path feeding a `sudo` execution — **MEDIUM → FIXED**
+
+`deploy.yml` copied the reviewed scripts to `/tmp/alo-deploy-<run_id>-<run_attempt>`
+via `appleboy/scp-action`, then ran `chmod 700 "${TEMP_DIR}"/*.sh` and
+`sudo … bash "${TEMP_DIR}/deploy.sh"`. `/tmp` is world-writable. If another local
+user pre-created that path — in particular as a symlink to somewhere like `/etc` —
+the scp would follow it and the privileged execution would run against
+attacker-influenced files.
+
+A step was added ahead of the transfer that creates the directory itself, mode
+`0700`, owned by the deploy user, and **fails if anything already exists at that
+path** (`mkdir` without `-p` refuses an existing path; an explicit `-L` test also
+catches a dangling symlink, which `-e` misses).
+
+### G15 — The production gate was weaker than the pull-request gate — **MEDIUM → FIXED**
+
+`deploy.yml`'s safety job ran `database-safety-scan.sh` and `bash -n` over three
+scripts, but ran **none** of `validate-compose.mjs`, `validate-route-auth.mjs` or
+the new workflow guard. A compose/port drift, an unauthenticated API route, or an
+unpinned third-party action could therefore reach production without failing any
+check on the path that actually deploys it. All three guards are now run in the
+deploy gate as well, and `setup-deploy-target.sh` was added to the `bash -n` list.
+
+### G16 — Documented server setup contradicted the project's own security gate — **MEDIUM → FIXED**
+
+`docs/CI-CD-GUIDE.md` instructed `ssh-copy-id … root@your-server-ip` and installing
+into `/root/.ssh/authorized_keys`, with `APP_DIR` given as `/opt/alolabs/agent-hub`.
+But `deploy/scripts/security-check.sh:240` reports `PermitRootLogin yes` as
+**critical**, and `deploy.sh:4` defaults `APP_DIR` to `/opt`. The documented setup
+would have failed the repository's own audit and deployed against the wrong path.
+Its `command=`-restricted `authorized_keys` line would also have broken the
+pipeline outright, because `deploy.yml` executes the scripts from a per-run `/tmp`
+directory that a fixed `command=` never matches.
+
+`deploy/scripts/setup-deploy-target.sh` replaces that section: a dedicated
+non-root deploy user, both keys with correct ownership and modes, a scoped sudoers
+drop-in validated with `visudo -c -f` before install, and an sshd hardening drop-in
+following the Ubuntu OpenSSH documentation. It is **dry-run by default**, refuses
+to disable password authentication unless a key is already authorized, validates
+the whole effective sshd config with `sshd -t` before applying and rolls back on
+failure, and reloads rather than restarts sshd so the operator's session survives.
+
+The `SETENV` trade-off in the generated sudoers rule is documented in the script,
+the guide and the runbook rather than hidden: `deploy.yml` sets variables on the
+`sudo` command line, which sudo only permits with `SETENV`, and `SETENV` means a
+leaked `PRODUCTION_SSH_KEY` implies root. It is still far tighter than the
+`NOPASSWD: ALL` such setups usually get.
+
+### Still open, not fixed here
+
+- **No `staging` environment and no staging workflow.** The environment can be
+  created now (commands in the runbook); the workflow has deliberately not been
+  written, because it needs a staging host and an untestable deploy path is worse
+  than none.
+- **CI remains unverified end-to-end.** Every check still fails in ~2 s with zero
+  steps executed. Nothing in this section is CI-proven; the three guards were run
+  locally and reported with their exit codes.
+- **G1–G11 are unchanged** by this section, except G10, which §4 already records as
+  closed.
+
+---
+
+## 11. Self-corrections recorded while writing §10
+
+Continuing the practice from §9 — a guard that has never been seen to fail is not a
+guard, so each check was probed individually. That process caught a defect in the
+new validator itself:
+
+| Claim | Status | Correction |
+|---|---|---|
+| "Check D (no secret interpolated into `run:`) works" | **Was false** | The first version inspected only the *block scalar* lines following `run:`, via the same indentation walk used elsewhere. The common form `run: echo ${{ secrets.FOO }}` puts the interpolation on the `run:` line itself, which was never examined, so the check **false-passed** on exactly the pattern it exists to catch. Fixed by also scanning the remainder of the `run:` line. |
+| First probe run "showed check D firing (exit 1)" | **Was a false positive** | That probe mutated the file and then restored it with `git checkout`, which reverts to the committed HEAD — at that moment still the *unpinned* version. The exit 1 came from check A (unpinned actions), not check D. The mutation under test had already been reverted before the assertion. Probing was redone with exact file backups instead of `git checkout`, and all five probes (A, B, C, D-inline, D-block) then passed with their messages matched. |
+
+Both are the same failure mode recorded earlier in this engagement: a green result
+that does not actually exercise the thing it claims to. The lesson applied here is
+that a new CI guard is only shipped once each of its checks has been observed to
+fail for the right reason, with the message matched — not merely once the guard
+exits 0 on a clean tree.
+
+Also corrected in passing, from §10: `docs/CI-CD-GUIDE.md` embedded workflow
+snippets using the wrong secret names in four places, not just the one secrets
+table. The rename was applied across the whole document and verified by grep
+(zero remaining `DEPLOY_HOST` / `DEPLOY_USER` / `DEPLOY_SSH_KEY`).
