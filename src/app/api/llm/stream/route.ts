@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { checkTokenBudget } from '@/lib/token-guard'
+import { internalBaseUrl } from '@/lib/internal-url'
 
 // ──────────────────────────────────────────────
 // Helper: estimate tokens (~4 chars per token)
@@ -17,7 +18,7 @@ function estimateTokens(text: string): number {
 async function autoSelectModel(task: string, input?: string, contextSize?: number): Promise<{ modelId: string }> {
   try {
     const response = await fetch(
-      new URL('/api/llm/route', process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'),
+      new URL('/api/llm/route', internalBaseUrl()),
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifySessionToken } from '@/lib/auth';
 import { db } from '@/lib/db';
+import { internalUrl } from '@/lib/internal-url';
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -34,7 +35,7 @@ async function authenticate(request: NextRequest) {
 
 async function callAI(systemPrompt: string, userPrompt: string): Promise<string> {
   // Try to use the AI router endpoint internally
-  const aiEndpoint = process.env.AI_ROUTE_ENDPOINT || 'http://localhost:3000/api/llm/route';
+  const aiEndpoint = process.env.AI_ROUTE_ENDPOINT || internalUrl('/api/llm/route');
 
   try {
     const response = await fetch(aiEndpoint, {
