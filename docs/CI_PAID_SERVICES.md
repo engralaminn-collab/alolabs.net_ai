@@ -34,7 +34,7 @@ unlike secrets it is readable in contexts such as `jobs.<job_id>.if`.
 | Workflow | Gated thing | Default | Why |
 | --- | --- | --- | --- |
 | `deploy.yml` | `deploy` job — SSH into the production host | skipped | touches production |
-| `backup.yml` | `backup` job — SSH into the production host | skipped | touches production; the `0 2 * * *` cron cannot start on its own |
+| `backup.yml` | **nothing — deliberately ungated** | always runs | See below |
 | `docker.yml` | the `linux/arm64` build leg | amd64 only | arm64 runs under QEMU emulation and is the largest minutes consumer |
 | `backup-portability.yml` | the `macos-latest` matrix leg | Linux only | a macOS minute bills at roughly 10x a Linux minute ($0.062 vs $0.006). Always runs on the weekly `30 6 * * 1` schedule |
 | `ci.yml`, `security*.yml` | nothing today | — | the advisory database and gitleaks are free, so the security gates stay on |
@@ -42,6 +42,28 @@ unlike secrets it is readable in contexts such as `jobs.<job_id>.if`.
 The test suite has **no** tests that call a billed third-party API — the
 provider and webhook specs stand up a local `http.createServer` on
 `127.0.0.1`. The guard below exists so that stays true.
+
+### Why `backup.yml` is deliberately NOT gated
+
+An earlier revision skipped the nightly production backup unless
+`SKIP_PAID_SERVICES` was explicitly `false`. That was wrong, and it is worth
+recording why so it is not reintroduced:
+
+1. **It disabled a required backup.** This policy is explicit that security,
+   backup, database-integrity and production-safety checks are never disabled
+   to make CI pass. Because the flag defaults to `true`, the `0 2 * * *` backup
+   would silently never run — disaster recovery switched off by a cost setting.
+2. **It bought nothing.** `backup.yml` triggers only on `schedule` and
+   `workflow_dispatch`; it never runs on `push` or `pull_request`, so it
+   contributes nothing to pull-request cost. There was no paid step to skip.
+
+A backup is not a paid service and not paid-service provisioning — it is one
+SSH command on a standard Linux runner. What it needs is a gate on *production
+access*, and that is what `environment: production` provides: add required
+reviewers there rather than reusing a cost flag to switch off backups.
+
+It still **fails closed**: missing `PRODUCTION_*` secrets abort the job with a
+clear error instead of attempting an SSH connection to an empty host.
 
 ## Enabling paid steps
 
@@ -55,7 +77,6 @@ CLI:
 ```bash
 gh workflow run deploy.yml --ref main -f migrations_approved=true -f run_paid_services=true
 gh workflow run docker.yml -f run_paid_services=true
-gh workflow run backup.yml -f run_paid_services=true
 ```
 
 ### Persistent (recommended: repository Variable)
@@ -122,6 +143,47 @@ existing local-server tests are unaffected.
   default at full price — 10x on a macOS runner.
 - `security-scan.yml` now publishes its audit output as an artifact instead of
   writing `audit-results.txt` that nothing collected.
+
+## Paid-dependency inventory
+
+Everything in this repository that can cost money, and its status. Audited by
+enumerating every `uses:` in `.github/workflows/` and every external URL
+referenced there.
+
+| Dependency | Where | Status | Notes |
+| --- | --- | --- | --- |
+| **GitHub-hosted runner minutes** | every workflow | **BLOCKS** | This repo is private, so every minute is billed against the account allowance. The allowance is currently exhausted, so *all* runs fail before starting. Not optional — it is the CI platform. |
+| macOS runner leg | `backup-portability.yml` | **Skipped by default** | ~10x the Linux rate. Linux always runs; macOS on opt-in or the weekly schedule. |
+| arm64 (QEMU) image leg | `docker.yml` | **Skipped by default** | amd64 always builds. Tag-triggered only, so no PR cost. |
+| Production host (SSH) | `deploy.yml` `deploy` job | **Skipped by default** | Requires explicit opt-in; also behind `environment: production`. |
+| GHCR image storage | `docker.yml` | **Optional** | Private Packages storage bills beyond the plan allowance. Tag-triggered only. |
+| `gitleaks/gitleaks-action` | `security.yml` | **Free today** | Free for personal accounts and small organizations; a `GITLEAKS_LICENSE` is required above that threshold. This repo is under a personal account. |
+| `appleboy/ssh-action`, `appleboy/scp-action` | `deploy.yml` | **Free** | Open-source actions; no licence fee. |
+| `oven-sh/setup-bun` | several | **Free** | Downloads the Bun binary from a public release. |
+| npm / Bun advisory database | `ci.yml`, `security*.yml` | **Free** | Network call, not billed. |
+| MySQL service container | `mysql.yml` | **Free** | A local container on the runner — not a third-party service, needs no credentials. |
+| AI provider APIs (OpenAI, DeepSeek, Groq, OpenRouter, Mistral…) | application runtime | **Not reachable from CI** | No spec calls them. `__tests__/setup.ts` installs a fetch guard that rejects any non-loopback request while skipping is active, so a future live call fails loudly instead of spending money. |
+
+**No workflow calls a paid API.** The only external host referenced anywhere in
+`.github/workflows/` is a documentation URL.
+
+### The one thing that cannot be configured away
+
+Requirement 1 — "pull requests pass their applicable checks without
+paid-service credentials" — is **not** satisfiable through workflow changes.
+The PR checks (`ci.yml`, `mysql.yml`, `security.yml`, `backup-portability.yml`)
+need no API keys and no third-party integrations; they need runner minutes, and
+on a private repository GitHub bills those. Two ways out:
+
+1. Clear the failed payment / raise the spending limit at
+   <https://github.com/settings/billing>, or
+2. Use a **self-hosted runner** — genuinely free of per-minute charges, and the
+   only way to have zero-cost CI on a private repository.
+
+Until one of those happens, every run fails with *"The job was not started
+because recent account payments have failed or your spending limit needs to be
+increased."* — before a single step executes, so no workflow logic is even
+reached.
 
 ## References
 
