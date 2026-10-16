@@ -21,9 +21,13 @@ const mockWorkflowCount = vi.fn();
 const mockDepartmentCount = vi.fn();
 const mockUsageLogCount = vi.fn();
 const mockSkillCount = vi.fn();
+const mockQueryRaw = vi.fn();
 
 vi.mock('@/lib/db', () => ({
   db: {
+    // The health route verifies connectivity with a real `SELECT 1`; without
+    // this the route correctly reports the database as unverified.
+    $queryRaw: (..._args: unknown[]) => mockQueryRaw(..._args),
     company: { count: (...args: unknown[]) => mockCompanyCount(...args) },
     agent: { count: (...args: unknown[]) => mockAgentCount(...args) },
     workflow: { count: (...args: unknown[]) => mockWorkflowCount(...args) },
@@ -45,6 +49,7 @@ describe('GET /api/health', () => {
     mockDepartmentCount.mockResolvedValue(4);
     mockUsageLogCount.mockResolvedValue(100);
     mockSkillCount.mockResolvedValue(20);
+    mockQueryRaw.mockResolvedValue([{ ok: 1 }]);
   });
 
   it('should return 200 status', async () => {
