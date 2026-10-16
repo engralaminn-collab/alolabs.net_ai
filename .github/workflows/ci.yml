@@ -20,6 +20,13 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+# Least privilege. CI only reads the checkout; it never writes to the repo, so
+# the default GITHUB_TOKEN is narrowed to contents:read. Without this the token
+# inherits the repository default, which may be write.
+# Ref: https://docs.github.com/en/actions/reference/security/secure-use
+permissions:
+  contents: read
+
 env:
   # Repository CI baseline; production reports its independently installed version.
   BUN_VERSION: '1.3.4'
@@ -41,29 +48,6 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Resolve paid-services policy
-        # Publishes the effective flag for every later step and records the
-        # decision in the job summary so a skipped paid step is never silent.
-        id: paid
-        env:
-          CI_RUN_PAID_OVERRIDE: ${{ inputs.run_paid_services == true && 'true' || '' }}
-          SKIP_PAID_FROM_VARS: ${{ vars.SKIP_PAID_SERVICES }}
-          SKIP_PAID_FROM_SECRET: ${{ secrets.SKIP_PAID_SERVICES }}
-        run: |
-          set -euo pipefail
-          # Precedence: workflow_dispatch input > repository Variable > Secret > env default.
-          effective="${SKIP_PAID_FROM_VARS:-${SKIP_PAID_FROM_SECRET:-${SKIP_PAID_SERVICES:-true}}}"
-          skip="$(CI_RUN_PAID_OVERRIDE="${CI_RUN_PAID_OVERRIDE}" SKIP_PAID_SERVICES="${effective}" \
-            bash scripts/ci-paid-services.sh)"
-          echo "skip_paid=${skip}" >> "${GITHUB_OUTPUT}"
-          echo "SKIP_PAID_SERVICES=${skip}" >> "${GITHUB_ENV}"
-          {
-            echo '### Paid / external-service steps'
-            echo ''
-            echo "- \`SKIP_PAID_SERVICES\` = \`${skip}\`"
-            echo "- workflow_dispatch \`run_paid_services\` = \`${CI_RUN_PAID_OVERRIDE:-not set}\`"
-            echo '- Opt in with the repository Variable `SKIP_PAID_SERVICES=false`.'
-          } >> "${GITHUB_STEP_SUMMARY}"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -136,3 +120,20 @@ jobs:
         # depends_on targets, app-port drift, and unreachable Caddy upstreams.
         # Runs without Docker so it works on every runner.
         run: node scripts/validate-compose.mjs
+      - name: Validate API route auth coverage
+        # Dependency-free. src/proxy.ts is the Next 16 edge gate and is
+        # fail-closed, but it only checks that a Bearer token is PRESENT — the
+        # authoritative session/tenant check is per-route via requireAuth().
+        # A route that is neither allowlisted nor auth-checked is reachable with
+        # `Authorization: Bearer x`, and fails silently. This makes it a build
+        # failure instead. Also reports routes made public incidentally by a
+        # startsWith() prefix match on a broader allowlist entry.
+        run: node scripts/validate-route-auth.mjs
+      - name: Validate GitHub Actions workflow security
+        # Dependency-free. Guards the three workflow defects found by hand:
+        # mutable action tags (re-pointable by upstream, in jobs holding the
+        # production SSH key), a missing least-privilege `permissions:` block,
+        # and secret names that drift between docs/CI-CD-GUIDE.md and the
+        # workflows (DEPLOY_* vs PRODUCTION_* made the documented setup unable
+        # to deploy). Also rejects interpolating secrets straight into `run:`.
+        run: node scripts/validate-workflow-security.mjs
