@@ -36,7 +36,8 @@
     "seed:enterprise": "npx tsx scripts/seed-enterprise-v3.ts",
     "seed:departments": "npx tsx scripts/seed-100-departments.ts",
     "seed:agentos": "npx tsx scripts/seed-agentos.ts",
-    "check:prisma-delegates": "tsx scripts/check-prisma-delegates.ts"
+    "check:prisma-delegates": "tsx scripts/check-prisma-delegates.ts",
+    "lint:workflows": "node scripts/validate-workflows.mjs"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "6.19.2",

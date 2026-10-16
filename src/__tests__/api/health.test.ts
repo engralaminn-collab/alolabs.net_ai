@@ -3,6 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock @/lib/db
 vi.mock('@/lib/db', () => ({
   db: {
+    // The health route verifies connectivity with a real `SELECT 1`; without
+    // this the route correctly reports the database as unverified.
+    $queryRaw: vi.fn().mockResolvedValue([{ ok: 1 }]),
     company: { count: vi.fn().mockResolvedValue(5) },
     agent: { count: vi.fn().mockResolvedValue(12) },
     workflow: { count: vi.fn().mockResolvedValue(3) },

@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main, develop, 'arena/**']
   workflow_dispatch:
+    inputs:
+      run_paid_services:
+        description: 'Allow billed / external-service steps to run (default: skipped)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -19,14 +28,43 @@ env:
   CSRF_SECRET: 'ci-only-not-production'
   JWT_SECRET: 'ci-only-not-production'
   API_GATEWAY_SECRET: 'ci-only-not-production'
+  # Default deny. Paid / externally-billed steps run only on an explicit
+  # opt-in: set the repository Variable (or Secret) SKIP_PAID_SERVICES=false,
+  # or tick `run_paid_services` on a workflow_dispatch run. Resolution lives in
+  # scripts/ci-paid-services.sh, which is unit-tested.
+  SKIP_PAID_SERVICES: 'true'
 
 jobs:
   quality:
     name: TypeScript, tests, lint, and build
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Resolve paid-services policy
+        # Publishes the effective flag for every later step and records the
+        # decision in the job summary so a skipped paid step is never silent.
+        id: paid
+        env:
+          CI_RUN_PAID_OVERRIDE: ${{ inputs.run_paid_services == true && 'true' || '' }}
+          SKIP_PAID_FROM_VARS: ${{ vars.SKIP_PAID_SERVICES }}
+          SKIP_PAID_FROM_SECRET: ${{ secrets.SKIP_PAID_SERVICES }}
+        run: |
+          set -euo pipefail
+          # Precedence: workflow_dispatch input > repository Variable > Secret > env default.
+          effective="${SKIP_PAID_FROM_VARS:-${SKIP_PAID_FROM_SECRET:-${SKIP_PAID_SERVICES:-true}}}"
+          skip="$(CI_RUN_PAID_OVERRIDE="${CI_RUN_PAID_OVERRIDE}" SKIP_PAID_SERVICES="${effective}" \
+            bash scripts/ci-paid-services.sh)"
+          echo "skip_paid=${skip}" >> "${GITHUB_OUTPUT}"
+          echo "SKIP_PAID_SERVICES=${skip}" >> "${GITHUB_ENV}"
+          {
+            echo '### Paid / external-service steps'
+            echo ''
+            echo "- \`SKIP_PAID_SERVICES\` = \`${skip}\`"
+            echo "- workflow_dispatch \`run_paid_services\` = \`${CI_RUN_PAID_OVERRIDE:-not set}\`"
+            echo '- Opt in with the repository Variable `SKIP_PAID_SERVICES=false`.'
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - name: Record tool versions
@@ -36,6 +74,11 @@ jobs:
           bunx prisma --version
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
+      - name: Validate workflow files
+        # Catches unpinned actions and context-availability mistakes (for
+        # example `secrets` in `jobs.<job_id>.if`, where it is not allowed)
+        # before they fail a run at the GitHub level.
+        run: bun run lint:workflows
       - name: Production dependency advisory gate
         run: npm audit --omit=dev --audit-level=moderate
       - name: Generate test Prisma client
@@ -64,9 +107,14 @@ jobs:
             exit "${status}"
           fi
       - name: Complete test suite
+        # SKIP_PAID_SERVICES is published to the job env by the resolve step.
+        # While it is active the suite-level fetch guard rejects any
+        # non-loopback request, and `itPaid`/`describePaid` specs are reported
+        # as skipped rather than silently passing.
         run: bun run test
         env:
           NODE_ENV: test
+          SKIP_PAID_SERVICES: ${{ steps.paid.outputs.skip_paid }}
       - name: ESLint
         run: bun run lint
       - name: Production build verification

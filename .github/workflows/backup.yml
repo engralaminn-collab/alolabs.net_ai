@@ -1,5 +1,29 @@
 name: Verified production database backup
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DELIBERATELY NOT GATED BY SKIP_PAID_SERVICES.
+#
+# An earlier revision of this file skipped the backup unless
+# SKIP_PAID_SERVICES was explicitly false. That was wrong on two counts:
+#
+#   1. It disabled a required backup. The free-service policy is explicit that
+#      security, backup, database-integrity and production-safety checks are
+#      never disabled to make CI pass. Since SKIP_PAID_SERVICES defaults to
+#      "true", the nightly backup would simply never run.
+#   2. It bought nothing. This workflow triggers only on `schedule` and
+#      `workflow_dispatch` — never on push or pull_request — so it contributes
+#      nothing to pull-request cost. There was no paid step here to skip.
+#
+# A backup is not a paid service and not paid-service provisioning: it is one
+# SSH command on a standard Linux runner. What it does need is a gate on
+# *production access*, and that is what `environment: production` provides —
+# add required reviewers there so a human approves, rather than reusing a
+# cost flag to switch off disaster recovery.
+#
+# It still fails closed: missing PRODUCTION_* secrets abort the job instead of
+# attempting an SSH connection to an empty host.
+# ─────────────────────────────────────────────────────────────────────────────
+
 on:
   workflow_dispatch:
   schedule:
@@ -14,11 +38,38 @@ permissions:
 
 jobs:
   backup:
+    name: Run verified server-side backup
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: production
     steps:
+      - name: Validate required deployment secrets
+        # Fail closed. Without this, a missing secret produces a confusing SSH
+        # error deep inside the action instead of a clear diagnosis.
+        env:
+          HOST: ${{ secrets.PRODUCTION_HOST }}
+          USERNAME: ${{ secrets.PRODUCTION_USER }}
+          SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          SSH_PORT: ${{ secrets.PRODUCTION_PORT }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for pair in "PRODUCTION_HOST:${HOST}" "PRODUCTION_USER:${USERNAME}" \
+                      "PRODUCTION_SSH_KEY:${SSH_KEY}" "PRODUCTION_PORT:${SSH_PORT}"; do
+            name="${pair%%:*}"; value="${pair#*:}"
+            if [[ -z "${value}" ]]; then
+              echo "::error::${name} is not set"; missing=1
+            fi
+          done
+          [[ "${missing}" -eq 0 ]] || {
+            echo 'Production backup cannot run: required secrets are missing.'
+            echo 'This is a configuration failure, not a skip — the backup did NOT happen.'
+            exit 1
+          }
+          echo 'All required production secrets are present.'
+
       - name: Run verified server-side backup
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         with:
           host: ${{ secrets.PRODUCTION_HOST }}
           username: ${{ secrets.PRODUCTION_USER }}
